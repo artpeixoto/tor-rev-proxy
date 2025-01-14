@@ -8,6 +8,7 @@ anyhow = "1.0.95"
 arti-client = {version = "0.26.0", features = ["static", "onion-service-client"]}
 clap = { version = "4.5.26", features = ["derive"] }
 either = "1.13.0"
+futures = "0.3.31"
 http = "1.2.0"
 httparse = "1.9.5"
 regex = "1.11.1"

@@ -4194,6 +4194,7 @@ dependencies = [
  "arti-client",
  "clap",
  "either",
+ "futures",
  "http 1.2.0",
  "httparse",
  "regex",

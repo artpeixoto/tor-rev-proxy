@@ -1,9 +1,7 @@
-use http::Uri;
+use futures::FutureExt;
 use httparse::{self , Header, Status}; 
-use regex::Regex;
-use std::{borrow::Cow, future::IntoFuture, io::{BufRead, Bytes}, net::{IpAddr, Ipv4Addr, SocketAddr}, ops::Not, result, str::{from_utf8, FromStr}, sync::{Arc, RwLock}};
-use anyhow::anyhow;
-use arti_client::{TorAddr, TorClient, TorClientConfig};
+use std::{borrow::Cow, future::IntoFuture, iter::repeat, net::{IpAddr, Ipv4Addr, SocketAddr}, ops::Not, str::{from_utf8, FromStr}, sync::Arc};
+use arti_client::{TorAddr, TorClient};
 use clap::Parser;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, join, net::TcpSocket, sync::OnceCell};
 use url::Url;
@@ -35,8 +33,8 @@ struct Init{
 async fn start_serving(init: &Init) -> Result<(), anyhow::Error>{
     let mut tcp_socket = TcpSocket::new_v4()?;
 
-    let tor_host_full_addr       = Arc::new(TorAddr::from((&init.host as &str, init.host_port))?);
-    let tor_host_addr  = Arc::new(init.host.clone());
+    let tor_host_full_addr   = Arc::new(TorAddr::from((&init.host as &str, init.host_port))?);
+    let tor_host_addr       = Arc::new(init.host.clone());
 
     let tor_client = 
         TorClient::builder()
@@ -60,79 +58,29 @@ async fn start_serving(init: &Init) -> Result<(), anyhow::Error>{
             
             // task itself
             Box::pin( async move {
-                let this_addr = Arc::new(RwLock::new(Option::<String>::None));
+                let this_addr = Arc::new(OnceCell::new());
                 
                 let mut tor_stream = tor_client.connect(tor_host_full_addr.as_ref()).await?;
                 tor_stream.wait_for_connection().await.unwrap();
-                let (mut tor_stream_reader, mut tor_stream_writer) = tor_stream.split();
-                let (mut tcp_stream_reader, mut tcp_stream_writer) = tcp_stream.split();
-
-                let client_to_tor_task = {
-                    // locals  
-                    let this_addr           = this_addr.clone();
-                    let tor_host_full_addr  = tor_host_full_addr.clone();
-                    let tor_host_addr       = tor_host_addr.clone();
-
-                    // client_to_tor task
-                    Box::pin(async move{
-                        let mut buf = [0_u8; 8192];
-                        let mut has_set_this_addr = false;
-
-                        // we remove the port information
-
-                        loop{
-                            let Ok(read) = tcp_stream_reader.read(&mut buf).await else {break};
-
-                            // println!("sending from client to host");
-
-                            let read_bytes              = &buf[0..read];
-
-                            // tor_stream_writer.write_all(read_bytes).await.unwrap();
-                            let mut has_changed_host    = false;
-                            let mut has_changed_referer = false;
-                            let mut out_req = Vec::new();
-
-                            for line in read_bytes.split(|x| x == &b'\n'){
-                                let line = line.trim_ascii_end();
-                                const HOST_STR:&[u8] = b"Host: "; 
-                                if !has_changed_host && line.starts_with(HOST_STR){
-                                    if !has_set_this_addr{
-                                        let this_addr_val = from_utf8(&line[HOST_STR.len()..]).unwrap().to_string();
-                                        println!("i am '{this_addr_val}'");
-                                        *this_addr.write().unwrap() = Some(this_addr_val);
-                                        has_set_this_addr = true;
-                                    }
-
-                                    // out_req.extend_from_slice(b"127.0.0.1");
-                                    out_req.extend_from_slice(HOST_STR);
-                                    out_req.extend_from_slice(tor_host_addr.as_bytes());
-                                    has_changed_host = true;
-                                } else {
-                                    out_req.extend_from_slice(line);
-                                }
-                                out_req.extend_from_slice(b"\r\n");
-                            }
-
-                            let out_req_str = from_utf8(&out_req).unwrap();
-                            if out_req_str.chars().all(|c| char::is_whitespace(c)).not(){
-                                let read_bytes_str = from_utf8(read_bytes).unwrap();
-                                println!("income: {read_bytes_str:?}");
-                                println!("sending from client to host: '{out_req_str:?}'");
-                                let out_req_is_eq =  &out_req as &[u8] == read_bytes; 
-
-                                println!("out_req_is_eq: {out_req_is_eq}");                                
-                            }
+                let (tor_stream_reader, tor_stream_writer) = tor_stream.split();
+                let (tcp_stream_reader, tcp_stream_writer) = tcp_stream.split();
 
 
-                            tor_stream_writer.write_all(&out_req).await.unwrap();
-                            tor_stream_writer.flush().await.unwrap();
-                        }
-                        Result::<(), anyhow::Error>::Ok(())
-                    })
+                let mut client_to_tor = ClientToTor{
+                    this_addr       : this_addr.clone(),
+                    tor_addr        : tor_host_addr.clone(),
+
+                    client_reader   : tcp_stream_reader,
+                    tor_writer      : tor_stream_writer,
                 };
-
-                let tor_to_client_task = Box::pin( async move {
-                });
+                let mut tor_to_client = TorToClient{
+                    this_addr       : this_addr.clone(),
+                    tor_addr        : tor_host_addr.clone(),
+                    client_writer   : tcp_stream_writer,
+                    tor_reader      : tor_stream_reader,
+                };
+                let client_to_tor_task = client_to_tor.run_task().into_future().map(|x| println!("client_to_tor closed."));
+                let tor_to_client_task = tor_to_client.run_task().into_future().map(|x| println!("tor_to_client closed."));
 
                 let _ = join!(client_to_tor_task, tor_to_client_task);
 
@@ -150,11 +98,12 @@ use tokio::net::tcp::ReadHalf as TcpReader;
 
 use arti_client::DataReader as TorReader;
 use arti_client::DataWriter as TorWriter;
-struct TorToClient<'a>{
-    this_addr       : &'a OnceCell<String>,
 
-    tor_addr        : &'a Arc<TorAddr>,
-    tor_port        : u16,  
+
+struct TorToClient<'a>{
+    this_addr       : Arc<OnceCell<String>>,
+
+    tor_addr        : Arc<String>,
 
     client_writer   : TcpWriter<'a>,
     tor_reader      : TorReader,
@@ -162,16 +111,11 @@ struct TorToClient<'a>{
 
 impl<'a> TorToClient<'a> { 
     async fn run_task(&mut self) -> Result<(), anyhow::Error>{
-        let mut buf = [0_u8; 64*1024*1024];
+        let mut buf = [0_u8; 64*1024];
         loop{
             let Ok(read) = self.tor_reader.read(&mut buf).await else {break};
-            println!("sending from host to client....");
             let read_bytes = &buf[0..read];
-                
-            'PRINT_BYTES: {// try to print bytes
-                let Ok(read_bytes_str) =  from_utf8( read_bytes) else {break 'PRINT_BYTES};
-                println!("to client =======\n {read_bytes_str} \n============");
-            }
+            
             self.client_writer.write_all(read_bytes).await?;
         }
         Result::<(), anyhow::Error>::Ok(())
@@ -179,10 +123,10 @@ impl<'a> TorToClient<'a> {
 }
 
 struct ClientToTor<'a>{
-    this_addr       : &'a OnceCell<String>,
+    this_addr       : Arc<OnceCell<String>>,
 
-    tor_addr        : &'a Arc<TorAddr>,
-    tor_port        : u16,  
+    tor_addr        : Arc<String>,
+    // tor_port        : u16,  
 
     client_reader   : TcpReader<'a>,
     tor_writer      : TorWriter,
@@ -192,9 +136,9 @@ struct ClientToTor<'a>{
 impl<'a> ClientToTor<'a>{
     pub async fn run_task(&mut self) -> Result<(), anyhow::Error>{
         'TASK_LOOP: loop{
-            let mut in_req_buf      = Vec::with_capacity(8192);
+
+            let mut in_req_buf      = vec![0_u8; 8*1024];
             let mut read            = 0;  //keeps track of the amount read
-            let mut out_req         = Vec::with_capacity(8192);
 
             'READ_AND_TRANSLATE: loop{
                 // wait for message
@@ -202,92 +146,84 @@ impl<'a> ClientToTor<'a>{
                     //something happened to the connection. We just stop doing anything then
                     break 'TASK_LOOP;
                 };
-
+                
                 // advances amount read
                 read = read + just_read; 
 
+                if just_read == 0 && read == 0{
+                    break 'TASK_LOOP;
+                }
+
+                println!("Received message from client {read}");
                 let in_req_bytes = &in_req_buf[0..read];
 
                 // first, we try to manipulate the content as http. 
                 let mut headers_buf = [httparse::EMPTY_HEADER; 128];
-                let in_req          = httparse::Request::new(&mut headers_buf);
+                let mut in_req      = httparse::Request::new(&mut headers_buf);
 
                 match in_req.parse(in_req_bytes){
-                    Ok(Status::Complete(complete)) => {
-                        // a http req
-                        out_req.push(format!(""))
+                    Ok(Status::Complete(body_start)) => {
+
+                        // write first line
+                        if let Some(m) = in_req.method.as_ref(){                            
+                            self.tor_writer.write_all(m.as_bytes()).await.unwrap();
+                            self.tor_writer.write_all(b" ").await.unwrap();
+                        }
+
+                        if let Some(p) = in_req.path.as_ref(){
+                            self.tor_writer.write_all(p.as_bytes()).await.unwrap();
+                            self.tor_writer.write_all(b" ").await.unwrap();
+                        };
+
+                        self.tor_writer.write_all(b"HTTP/1.1\r\n").await.unwrap();                        
+
+                        //write headers
+                        for header in in_req.headers{
+                            let header_value = match header.name{
+                                "Host" => {
+                                    if self.this_addr.initialized().not(){
+                                        let header_value = from_utf8(header.value).unwrap().to_string();
+                                        self.this_addr.set(header_value).unwrap();
+                                    }
+
+                                    Cow::Borrowed(self.tor_addr.as_str().as_bytes())
+                                },
+                                "Referer" => {
+                                    let mut url = Url::from_str(from_utf8(header.value).unwrap()).unwrap();
+
+                                    url.set_host(Some(self.tor_addr.as_str())).unwrap();
+
+                                    Cow::Owned(url.to_string().into_bytes())
+                                }
+                                _ => Cow::Borrowed(header.value)
+                            };
+                            self.tor_writer.write_all(header.name.as_bytes()).await.unwrap();
+                            self.tor_writer.write_all(b": ").await.unwrap();
+                            self.tor_writer.write_all(&header_value).await.unwrap();
+                            self.tor_writer.write_all(b"\r\n").await.unwrap();
+                        }
+                        self.tor_writer.write_all(b"\r\n").await.unwrap();
+
+                        let body_bytes = &in_req_bytes[body_start..];
+                        self.tor_writer.write_all(body_bytes).await.unwrap();
+                        self.tor_writer.flush().await.unwrap();
+                        continue 'TASK_LOOP;
                     },
                     Ok(Status::Partial)            => {
-                        // incomplete. 
+                        // incomplete, lets read more. 
+                        in_req_buf.extend((0..(8*1024)).into_iter().map(|_| 0_u8));
                         continue 'READ_AND_TRANSLATE;
                     },
-                    Err(e)                         => {
+                    Err(_e)                         => {
                         // parsing failed. In this case, there is no need to do anything. We just forward the message as is
                         self.tor_writer.write_all(in_req_bytes).await?;
-                        self.tor_writer.flush().await;
+                        self.tor_writer.flush().await.unwrap();
                         continue 'TASK_LOOP;
                     },
                 };
             }
-
-
-
-
-            // tor_stream_writer.write_all(read_bytes).await.unwrap();
-            let mut has_changed_host    = false;
-            let mut has_changed_referer = false;
-
-            let mut lines = read_bytes.split(|x| *x == b'\n');
-
-            //the first line is the http command. Nothing important here, really 
-        
-
-            // lines are split by a "/n/r" 
-            // we use /n as an anchor...
-                // ...and remove the '\r' at the end
-                let line = from_utf8( line)?.strip_suffix("\r").unwrap();
-
-                const HOST_STR:&[u8] = b"Host: "; 
-                if !has_changed_host && line.starts_with(HOST_STR){
-                    if !self.this_addr.initialized(){
-                        let this_addr_val = from_utf8(&line[HOST_STR.len()..]).unwrap().to_string();
-                        println!("i am '{this_addr_val}'");
-                        self.this_addr.set(this_addr_val);
-                    }
-
-                    // out_req.extend_from_slice(b"127.0.0.1");
-                    out_req.extend_from_slice(HOST_STR);
-                    out_req.extend_from_slice(self.tor_addr.as_bytes());
-                    has_changed_host = true;
-                } else {
-                    out_req.extend_from_slice(line);
-                }
-                out_req.extend_from_slice(b"\r\n");
-
-            let out_req_str = from_utf8(&out_req).unwrap();
-            if out_req_str.chars().all(|c| char::is_whitespace(c)).not(){
-                let read_bytes_str = from_utf8(read_bytes).unwrap();
-                println!("income: {read_bytes_str:?}");
-                println!("sending from client to host: '{out_req_str:?}'");
-                let out_req_is_eq =  &out_req as &[u8] == read_bytes; 
-
-                println!("out_req_is_eq: {out_req_is_eq}");                                
-            }
-            
-            tor_stream_writer.write_all(&out_req).await.unwrap();
-            tor_stream_writer.flush().await.unwrap();
         }
+
         Result::<(), anyhow::Error>::Ok(())
     }
-    fn try_translate_http_request(&self, in_req_bytes: &[u8], out_req_bytes: &mut Vec<u8>) -> Result<ParseResult, anyhow::Error>{
-        // first we try to parse it
-        let 
-        
-    }
-}
-
-enum ParseResult{
-    Successful,
-    NeedMoreData,
-    Error,
 }

@@ -3325,6 +3325,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tokio-native-tls"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbae76ab933c85776efabc971569dd6119c580d8f5d448769dec1764bf796ef2"
+dependencies = [
+ "native-tls",
+ "tokio",
+]
+
+[[package]]
 name = "tokio-util"
 version = "0.7.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4199,7 +4209,9 @@ dependencies = [
  "httparse",
  "regex",
  "serde",
+ "socket2",
  "tokio",
+ "tokio-native-tls",
  "tryvial",
  "ureq",
  "url",

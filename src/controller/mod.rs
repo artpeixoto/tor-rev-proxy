@@ -1,21 +1,35 @@
-use crate::init::Init;
+use crate::{
+    init::Init,
+    main_process::{
+        connection::{ConnectionCfgs, ConnectionEvt},
+        connection_manager::{ConnectionManagerCfgs, ConnectionManagerEvt},
+    },
+    renames::{BroadcastReceiver, WatchSender},
+};
 
-mod controller_api_interface;
+pub mod controller_api_interface;
 
-pub struct Controller{
-
+pub struct Controller {
+    conn_cfg: WatchSender<ConnectionCfgs>,
+    conn_mngr_cfg: WatchSender<ConnectionManagerCfgs>,
+    conn_evts_rec: BroadcastReceiver<ConnectionEvt>,
+    conn_mngr_evts_rec: BroadcastReceiver<ConnectionManagerEvt>,
 }
 
-impl Controller{
-	pub fn new(init: &Init) -> Self{
-		todo!()
-	}
-	pub fn connect_to_main_process(&mut self, )
+impl Controller {
+    pub fn new(
+        conn_cfg: WatchSender<ConnectionCfgs>,
+        conn_mngr_cfg: WatchSender<ConnectionManagerCfgs>,
+        conn_evts_rec: BroadcastReceiver<ConnectionEvt>,
+        conn_mngr_evts_rec: BroadcastReceiver<ConnectionManagerEvt>,
+    ) -> Self {
+        Self {
+            conn_cfg,
+            conn_mngr_cfg,
+            conn_evts_rec,
+            conn_mngr_evts_rec,
+        }
+    }
 }
 
-pub trait ControllerInterface{
-	fn connect_to_controller(&mut self,controller: &Controller ) {
-		todo!()
-	}
-	
-}
+pub trait ControllerInterface {}

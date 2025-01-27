@@ -10,6 +10,7 @@ impl<T> AbortOnDropHandleExt for JoinHandle<T>{
 		AbortOnDropHandle(self.abort_handle())
 	}
 }
+
 impl Drop for AbortOnDropHandle{
 	fn drop(&mut self) {
 		self.0.abort();

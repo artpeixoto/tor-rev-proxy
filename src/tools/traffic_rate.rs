@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, PartialOrd, Ord, Deserialize)]
 pub struct TrafficRate{
 	pub kilobytes_per_second: u32,
 }
@@ -15,5 +15,4 @@ impl TrafficRate{
 	pub fn get_duration_per_kilobyte(&self) -> Duration{
 		Duration::from_secs(1) / self.kilobytes_per_second
 	}
-
 }

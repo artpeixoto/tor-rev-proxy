@@ -15,6 +15,6 @@ pub use arti_client::DataWriter as TorWriter;
 
 pub use tokio::net::tcp::OwnedWriteHalf as TcpWriter;
 pub use tokio::net::tcp::OwnedReadHalf as TcpReader;
-use tor_rtcompat::tokio::PreferredRuntime;
+use tor_rtcompat::PreferredRuntime;
 
 pub type TorSocket = arti_client::TorClient<PreferredRuntime>;

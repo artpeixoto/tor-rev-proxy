@@ -1,14 +1,17 @@
 use core::alloc;
 use std::{alloc::GlobalAlloc, array, collections::TryReserveError, marker::PhantomPinned, mem::{self, MaybeUninit}, ops::{Deref, Index, RangeBounds}, slice::{from_raw_parts_mut, SliceIndex}};
 
-pub struct SafeVec<T>{  // careful
+use tor_rtcompat::test_with_all_runtimes;
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct SafeVec<T> {  
 	inner_value	: Vec<T>,
 }
 
 impl<T: Sized> Drop for SafeVec<T>{
 	fn drop(&mut self) {
 		let inner_value = mem::replace(&mut self.inner_value, Vec::new());
-		Self::clean_vec(inner_value);
+		clean_vec(inner_value);
 	}
 }
 
@@ -17,6 +20,7 @@ impl<T: Sized> SafeVec<T>{
 		Self { inner_value: Vec::with_capacity(cap) }
 	}
 
+	// Do notice that reallocation of this is quite expensive. 
 	pub fn new() -> Self{
 		Self {
 			inner_value: Vec::new()
@@ -25,46 +29,47 @@ impl<T: Sized> SafeVec<T>{
 	pub fn new_from_vec(vec: Vec<T>) -> Self{
 		Self { inner_value: vec }
 	}
-	// this does not reserve exactly.
+
 	pub fn reserve(&mut self, count: usize){
-		let desired_capacity = self.inner_value.len() + count;
-		self.grow_capacity(desired_capacity);
+		let desired_capacity = get_next_capacity(self.inner_value.len() + count);
+		reserve_capacity(&mut self.inner_value, desired_capacity);
 	}
 
-	pub fn grow_capacity(&mut self, new_cap: usize ){
-		if new_cap <= self.inner_value.capacity() { return }
-
-		let new_cap = {
-			let mut cap = self.inner_value.capacity();
-			while cap < new_cap{
-				cap *= 2;
-			}
-			cap
-		};
-
-		let mut new_inner_value = Vec::with_capacity(new_cap);
-		new_inner_value.append(&mut self.inner_value);
-		new_inner_value = mem::replace(&mut self.inner_value, new_inner_value);
-		Self::clean_vec(new_inner_value);
-	}
-
-	pub fn push(&mut self, val: T){
+	pub fn push(&mut self, val: T) {
 		if self.inner_value.spare_capacity_mut().is_empty(){
-			self.grow_capacity(self.inner_value.capacity() * 2);
+			let desired_cap = get_next_capacity(self.inner_value.len() + 1);
+			reserve_capacity(&mut self.inner_value, desired_cap);
 		}
 		self.inner_value.push(val);
 	}
 
-	pub fn clean_vec(mut v: Vec<T>) {
-		v.clear();	
-		unsafe {
-			let used_size = v.capacity() * mem::size_of::<T>();
-			let v_start = v.as_mut_ptr() as *mut u8;
-			let v_data_slice = core::slice::from_raw_parts_mut(v_start, used_size);
-			v_data_slice.fill(0);
-		}
+}
+
+#[inline]
+fn get_next_capacity(min_cap: usize) -> usize {
+	(min_cap).checked_next_power_of_two().unwrap_or(usize::MAX)
+} 
+
+fn clean_vec<T: Sized>(mut v: Vec<T>) {
+	// drop elements
+	v.clear();	
+	unsafe {
+		let used_size = v.capacity() * mem::size_of::<T>();
+		let v_start = v.as_mut_ptr() as *mut u8;
+		let v_data_slice = core::slice::from_raw_parts_mut(v_start, used_size);
+		v_data_slice.fill(0);
 	}
 }
+
+fn reserve_capacity<T>(vec: &mut Vec<T>, new_cap: usize ){
+	if new_cap <= vec.capacity() { return }
+
+	let mut old_vec = mem::replace(vec, Vec::with_capacity(new_cap));
+	vec.append(&mut old_vec);
+	clean_vec(old_vec);
+}
+
+
 
 impl<T: Sized + Clone> SafeVec<T>{
 	pub fn extend_from_slice(&mut self, vals: &[T]){
@@ -73,14 +78,12 @@ impl<T: Sized + Clone> SafeVec<T>{
 			self.push(val.clone());
 		}
 	}
-	pub fn extend_with_element(&mut self, value: T, count: usize){
+	pub fn extend_with_elements(&mut self, value: T, count: usize){
 		self.reserve(count);
 		for _ in 0..count {
 			self.push(value.clone());
 		}
 	}
-
-
 }
 impl<T> AsRef<[T]> for SafeVec<T>{
 	fn as_ref(&self) -> &[T] {
@@ -101,4 +104,59 @@ impl<T> Index<usize> for SafeVec<T>{
 	fn index(&self, index: usize) -> &Self::Output {
 		&self.inner_value[index]
 	}
+}
+
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
+pub struct SafeString{ inner_value: String }
+
+impl AsRef<str> for SafeString{
+	fn as_ref(&self) -> &str {
+		&self.inner_value
+	}
+}
+
+
+impl AsMut<str> for SafeString{
+	fn as_mut(&mut self) -> &mut str {
+		todo!()
+	}
+}
+
+impl Drop for SafeString{
+	fn drop(&mut self) {
+		todo!()
+	}
+}
+
+impl SafeString{
+	pub fn new()  -> Self{
+		Self{inner_value: String::new()}
+	}
+
+	pub fn with_capacity(cap: usize) -> Self{
+		Self{inner_value: String::with_capacity(cap)}
+	}
+	pub fn from_string(string: String) -> Self{
+		Self{inner_value: string}
+	}
+
+	pub fn reserve(&mut self, byte_count: usize){
+		let min_cap = get_next_capacity(self.inner_value.len() + byte_count);
+		replace_with::replace_with_or_abort(&mut self.inner_value, |string| {
+			let mut vec = string.into_bytes();
+			reserve_capacity(&mut vec, min_cap);
+			String::from_utf8(vec).unwrap()
+		});
+	}
+	pub fn push(&mut self, c: char) {
+		self.reserve(c.len_utf8());
+		self.inner_value.push(c);
+	}
+	
+	pub fn push_str(&mut self, str: &str){
+		self.reserve(str.len());
+		self.inner_value.push_str(str);
+	}
+	
 }

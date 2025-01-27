@@ -1,27 +1,22 @@
 use crate::{
-    init::Init,
-    main_process::{
-        connection::{ConnectionCfgs, ConnectionEvt},
-        connection_manager::{ConnectionManagerCfgs, ConnectionManagerEvt},
-    },
-    renames::{BroadcastReceiver, WatchSender},
+    comm_channels::{self, ControllerEndpoint}, init::Init, main_process::{
+        connection::{ConnectionConfig, ConnectionEvent},
+        process::{ProcessConfig, ProcessEvent},
+    }, renames::{BroadcastReceiver, WatchSender}
 };
-
-pub mod controller_api_interface;
+pub mod tty_interface;
+pub mod controller_api;
 
 pub struct Controller {
-    conn_cfg: WatchSender<ConnectionCfgs>,
-    conn_mngr_cfg: WatchSender<ConnectionManagerCfgs>,
-    conn_evts_rec: BroadcastReceiver<ConnectionEvt>,
-    conn_mngr_evts_rec: BroadcastReceiver<ConnectionManagerEvt>,
+    comm_channels: comm_channels::ControllerEndpoint,
 }
 
 impl Controller {
     pub fn new(
-        conn_cfg: WatchSender<ConnectionCfgs>,
-        conn_mngr_cfg: WatchSender<ConnectionManagerCfgs>,
-        conn_evts_rec: BroadcastReceiver<ConnectionEvt>,
-        conn_mngr_evts_rec: BroadcastReceiver<ConnectionManagerEvt>,
+        conn_cfg: WatchSender<ConnectionConfig>,
+        conn_mngr_cfg: WatchSender<ProcessConfig>,
+        conn_evts_rec: BroadcastReceiver<ConnectionEvent>,
+        conn_mngr_evts_rec: BroadcastReceiver<ProcessEvent>,
     ) -> Self {
         Self {
             conn_cfg,

@@ -1,26 +1,28 @@
-use std::{borrow::Cow, future::IntoFuture, net::{IpAddr, SocketAddr}, str::{from_utf8, FromStr}, sync::{Arc, Weak}, time::Duration};
-use crate::{host::HostAddrGetter, obliterate, renames::*, tools::{safe_vec::SafeVec, traffic_direction::TrafficDirection}, types::{abort_on_drop_handle::{AbortOnDropHandle, AbortOnDropHandleExt}, client_addr::ClientAddr, endpoint::{self, Endpoint}, traffic_rate::TrafficRate}};
+use std::{ future::IntoFuture, net::{IpAddr, SocketAddr}, str::{from_utf8, FromStr}, sync::{Arc, Weak}, time::Duration};
+use crate::{host::HostAddrGetter, obliterate, renames::*, tools::{safe_vec::{SafeString, SafeVec}, traffic_direction::TrafficDirection}, types::{abort_on_drop_handle::{AbortOnDropHandle, AbortOnDropHandleExt}, client_addr::ClientAddr, endpoint::{self, Endpoint}}};
 use arti_client::TorClient;
 use either::Either::{self, Left, Right};
 use futures::{future::{self, select}, FutureExt};
 use httparse::Status;
 use replace_with::replace_with;
+use serde::{Deserialize, Serialize};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt, Interest}, net::TcpStream, select, sync::{broadcast::Sender, OnceCell}, task::{AbortHandle, JoinHandle}};
 use tor_rtcompat::tokio::PreferredRuntime;
 use url::Url;
 use uuid::Uuid;
+use crate::tools::traffic_rate::TrafficRate;
 
-
-pub struct ConnectionCfgs{
-    pub traffic_max_rate   	: TrafficRate,
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize , Debug)]
+pub struct ConnectionConfig{
+pub traffic_max_rate   	: TrafficRate,
     pub poll_rate_duration  : Duration,
     pub timeout             : Duration
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub enum ConnectionEvt{
-    ConnectionTaskInitiated,
-	Traffic{
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize)]
+pub enum ConnectionEvent{
+    ConnectionEstabilished,
+	TrafficHappened{
 		dir			: TrafficDirection, 
 		other_part	: Endpoint, 
 		data_len	: usize
@@ -28,10 +30,14 @@ pub enum ConnectionEvt{
     ConnectionClosed,
 }
 
+pub enum ConnectionClosedReason{
+	TimedOut,
+}
+
 pub struct Connection{
     tor_to_client   		: TorToClient,
     client_to_tor   		: ClientToTor,
-	evt_sender				: BroadcastSender<ConnectionEvt>,
+	evt_sender				: BroadcastSender<ConnectionEvent>,
 }
 
 impl Connection{
@@ -50,7 +56,7 @@ impl Connection{
 			},
 		};
 
-		let _ = self.evt_sender.send(ConnectionEvt::ConnectionClosed);
+		let _ = self.evt_sender.send(ConnectionEvent::ConnectionClosed);
 
 		res
 	}
@@ -59,10 +65,10 @@ impl Connection{
 pub struct ConnectionInit{
 	pub client_addr		: ClientAddr,
 	pub client_stream	: TcpStream,
-	pub host_client		: TorClient<PreferredRuntime>,	
-	pub conn_configs	: WatchReceiver<ConnectionCfgs>,
+	pub host_client		: TorSocket,	
+	pub conn_configs	: WatchReceiver<ConnectionConfig>,
 	pub host_addr_getter: HostAddrGetter,
-
+	pub input_port		: u16,
 }
 
 impl ConnectionInit{
@@ -71,7 +77,9 @@ impl ConnectionInit{
 	{
 		let ( evt_sender, evt_receiver) = broadcast_channel(64);
 		let ( client_reader, client_writer) = self.client_stream.into_split();
-		let host_stream = self.host_client.connect(self.host_addr_getter.get_host_addr()).await?;
+
+		let host_stream = self.host_client.connect((self.host_addr_getter.get_host_addr().as_ref(), self.input_port)).await?;
+
 		let ( host_reader, host_writer,) = host_stream.split();
 		let this_addr = Arc::new(OnceCell::new());
 
@@ -81,7 +89,7 @@ impl ConnectionInit{
 			evt_sender: evt_sender.clone(),
 			this_addr: this_addr.clone(),
 		};
-
+		
 		let client_to_tor = ClientToTor{
 			client_reader,
 			this_addr: this_addr.clone(),
@@ -95,8 +103,8 @@ impl ConnectionInit{
 			tor_to_client,
 			client_to_tor,
 		};
-		let mut tasks = Vec::new();
 
+		let mut tasks = Vec::new();
 		let conn_join_handle = tokio::spawn(conn.run());
 		let conn_aod_handle  = conn_join_handle.get_abort_on_drop_handle();
 
@@ -107,21 +115,22 @@ impl ConnectionInit{
 			evt_receiver	: evt_receiver,
 			tasks,
 		};
+		
 		Ok((conn_ctrl, conn_join_handle))
 	}
 }
 
 pub struct ConnectionController{
 	addr				: ClientAddr,
-	evt_receiver		: BroadcastReceiver<ConnectionEvt>,
+	evt_receiver		: BroadcastReceiver<ConnectionEvent>,
 	tasks				: Vec<AbortOnDropHandle>,
 }
 
 impl ConnectionController{
-	pub fn client(&self) -> &ClientAddr{
+	pub fn client_addr(&self) -> &ClientAddr{
 		&self.addr
 	}
-	pub fn subscribe_to_events(&self) -> BroadcastReceiver<ConnectionEvt>{
+	pub fn subscribe_to_events(&self) -> BroadcastReceiver<ConnectionEvent>{
 		self.evt_receiver.resubscribe()
 	}
 
@@ -132,7 +141,7 @@ impl ConnectionController{
 
 struct TorToClient{
 	this_addr		: Arc<OnceCell<String>>,
-	evt_sender		: BroadcastSender<ConnectionEvt>,
+	evt_sender		: BroadcastSender<ConnectionEvent>,
     client_writer   : TcpWriter,
     host_reader     : TorReader,
 }
@@ -154,7 +163,7 @@ impl TorToClient {
 struct ClientToTor{
     this_addr       : Arc<OnceCell<String>>,
     host_addr_getter: HostAddrGetter,
-	evt_sender		: BroadcastSender<ConnectionEvt>,
+	evt_sender		: BroadcastSender<ConnectionEvent>,
 
     client_reader   : TcpReader,
     host_writer     : TorWriter,
@@ -162,7 +171,7 @@ struct ClientToTor{
 
 
 impl ClientToTor{
-    pub async fn run_task(mut self) -> Result<(), anyhow::Error>{
+    pub async fn run_task(mut self) -> Result<(), anyhow::Error> {
         'TASK_LOOP: loop{
             let mut in_req_buf      = SafeVec::new_from_vec(vec![0_u8; 8*1024]);
             let mut read            = 0;  //keeps track of the amount read
@@ -170,7 +179,7 @@ impl ClientToTor{
             'READ_AND_TRANSLATE: loop{
                 // wait for message
                 let Ok(just_read) = self.client_reader.read(&mut in_req_buf.as_mut()[read..]).await else {
-                    //something happened to the connection. We just stop doing anything then
+                    //something happened to the connect
                     break 'TASK_LOOP;
                 };
                 
@@ -189,6 +198,7 @@ impl ClientToTor{
 
                 match in_req.parse(in_req_bytes){
                     Ok(Status::Complete(body_start)) => {
+
                         // write first line
                         if let Some(m) = in_req.method.as_ref(){                            
                             self.host_writer.write_all(m.as_bytes()).await.unwrap();
@@ -204,7 +214,19 @@ impl ClientToTor{
 
                         //write headers
                         for header in in_req.headers{
-                            let header_value = match header.name{
+							async fn write_header<'a>(
+								host_writer: &mut TorWriter,
+								header_name: &'a str, 
+								header_value: &'a [u8]
+							)-> Result<(), anyhow::Error> { 
+								host_writer.write_all(header_name.as_bytes()).await?;
+								host_writer.write_all(b": ").await?;
+								host_writer.write_all(&header_value).await?;
+								host_writer.write_all(b"\r\n").await?;
+								Ok(())
+							}
+
+                            match header.name{
                                 "Host" => {
 									'INITIALIZE_THIS_ADDR:{
 										if !self.this_addr.initialized() {
@@ -213,22 +235,25 @@ impl ClientToTor{
 											self.this_addr.set(addr_value)?;
 										}
 									}
-                                    Cow::Borrowed(self.host_addr_getter.get_host_addr().as_bytes())
+									
+									let host_value = self.host_addr_getter.get_host_addr();
+									write_header(&mut self.host_writer, header.name,  host_value.as_ref().as_bytes()).await?;
                                 },
                                 "Referer" => {
                                     let mut url = Url::from_str(from_utf8(header.value)?)?;
 
-                                    url.set_host(Some(self.host_addr_getter.get_host_addr())).unwrap();
+                                    url.set_host(Some(self.host_addr_getter.get_host_addr().as_ref())).unwrap();
 
-                                    Cow::Owned(url.to_string().into_bytes())
+									let safe_url_string =SafeString::from_string( url.into());
+
+									write_header(&mut self.host_writer, header.name, safe_url_string.as_ref().as_bytes()).await?;
                                 }
-                                _ => Cow::Borrowed(header.value)
+                                header_name => {
+									write_header(&mut self.host_writer, header_name, header.value).await?;
+								}
                             };
-                            self.host_writer.write_all(header.name.as_bytes()).await.unwrap();
-                            self.host_writer.write_all(b": ").await.unwrap();
-                            self.host_writer.write_all(&header_value).await.unwrap();
-                            self.host_writer.write_all(b"\r\n").await.unwrap();
                         }
+
                         self.host_writer.write_all(b"\r\n").await.unwrap();
 
                         let body_bytes = &in_req_bytes[body_start..];
@@ -236,9 +261,9 @@ impl ClientToTor{
                         self.host_writer.flush().await.unwrap();
                         continue 'TASK_LOOP;
                     },
-                    Ok(Status::Partial)            => {
+                    Ok(Status::Partial) => {
                         // incomplete, lets read more. 
-                        in_req_buf.extend_with_element(0_u8, 8_usize*1024);
+                        in_req_buf.extend_with_elements(0_u8, 8_usize*1024);
                         continue 'READ_AND_TRANSLATE;
                     },
                     Err(_e)                         => {
@@ -253,15 +278,4 @@ impl ClientToTor{
 
         Result::<(), anyhow::Error>::Ok(())
     }
-}
-pub struct RateLimiter{
-
-}
-impl RateLimiter{
-	pub fn update_rate(&mut self, new_rate: &Duration){
-		todo!()
-	}
-	pub async fn limit_rate(&mut self, data_bytes_count: usize) {
-		todo!()
-	}
 }

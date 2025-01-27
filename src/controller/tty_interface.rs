@@ -11,5 +11,4 @@ impl ApiControllerInterface{
 }
 
 impl ControllerInterface for ApiControllerInterface {
-
 } 

@@ -5,9 +5,11 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.95"
-arti-client = {version = "0.26.0", features = ["static", "onion-service-client"]}
+arti-client = {version = "0.26.0", features = ["static", "onion-service-client", "compression"]}
 async-stream = "0.3.6"
+axum = "0.8.1"
 clap = { version = "4.5.26", features = ["derive"] }
+cryptify = "3.1.1"
 dashmap = "6.1.0"
 either = "1.13.0"
 futures = "0.3.31"
@@ -20,13 +22,15 @@ serde = { version = "1.0.217", features = ["derive"] }
 socket2 = "0.5.8"
 tokio = { version = "1.43.0", features = ["rt", "rt-multi-thread", "full", "net", "socket2", "io-util"] }
 tokio-native-tls = "0.3.1"
-tor-rtcompat = { version = "0.26.0", features = ["full"] }
+tor-rtcompat = { version = "0.26.0", features = ["native-tls", "tokio"] }
 tryvial = "0.2.0"
 ureq = { version = "2.12.1", features = ["http-crate", "http-interop"] }
 url = "2.5.4"
 uuid = { version = "1.12.1", features = ["rng", "serde"] }
+vec1 = "1.12.1"
 
 [profile.release]
 opt-level 		= 3
 lto 			= "fat"
 codegen-units 	= 1
+

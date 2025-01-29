@@ -6,7 +6,7 @@ pub struct ProcessEndpoint{
 
 pub struct ControllerEndpoint{
 	pub cfg: ConfigWriters,
-	pub evt: EventReceivers,
+	pub evt: EventListeners,
 }
 
 pub fn make_comm_channels(initial_configurations: (ProcessConfig, ConnectionConfig)) -> (ProcessEndpoint, ControllerEndpoint ){
@@ -32,7 +32,7 @@ pub fn make_comm_channels(initial_configurations: (ProcessConfig, ConnectionConf
 				conn		: conn_cfg_sender,
 				process	: conn_mngr_cfg_sender
 			},
-			evt: EventReceivers{
+			evt: EventListeners{
 				conn		: conn_evt_receiver,
 				process	: conn_mngr_evt_receiver,
 			}
@@ -42,9 +42,8 @@ pub fn make_comm_channels(initial_configurations: (ProcessConfig, ConnectionConf
 
 
 pub struct ConfigReaders{
-	pub conn		: WatchReceiver<ConnectionConfig>,
+	pub conn	: WatchReceiver<ConnectionConfig>,
 	pub process	: WatchReceiver<ProcessConfig>
-
 }
 pub struct ConfigWriters{
 	pub conn	: WatchSender<ConnectionConfig>,
@@ -57,13 +56,13 @@ pub struct EventSenders{
 }
 
 
-pub struct EventReceivers{
+pub struct EventListeners{
 	pub conn	: BroadcastReceiver<(ClientAddr, ConnectionEvent)>,
 	pub process	: BroadcastReceiver<ProcessEvent>
 }
 
 
-impl Clone for EventReceivers{
+impl Clone for EventListeners{
 	fn clone(&self) -> Self {
 		Self { 
 			conn: self.conn.resubscribe(), 

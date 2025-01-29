@@ -11,12 +11,12 @@ use arti_client::{
     config::TorClientConfigBuilder, TorAddr, TorClient, TorClientBuilder, TorClientConfig,
 };
 use clap::Parser;
-use controller::Controller;
+use controller::controller::Controller;
 use futures::FutureExt;
 use host::HostAddrGetter;
 use httparse::{self, Status};
 use init::{get_init, InitArgs};
-use main_process::connection_manager::Process;
+use main_process::{process::Process};
 use renames::{broadcast_channel, watch_channel};
 use std::{
     borrow::Cow,
@@ -39,16 +39,14 @@ use url::Url;
 async fn main() -> Result<(), anyhow::Error> {
     let init = get_init();
     let host_addr_getter = HostAddrGetter::new();
-    let (conn_mngr_cfg, conn_cfg) = init.build_configs();
+    let (process_endpoint, controller_endpoint) = comm_channels::make_comm_channels(init.build_configs());
 
-    let host_socket = init.build_host_socket()?;
-    let client_socket = init.build_client_socket()?;
+    let process_controller = Controller::new(controller_endpoint);
 
-    let mut conn_mngr = Process::new(
+    let mut main_process = Process::new(
         host_addr_getter,
-        client_socket,
-        host_socket,
+        process_endpoint
     );
 
-    conn_mngr.listen_for_connections().await
+    main_process.listen_for_connections().await
 }

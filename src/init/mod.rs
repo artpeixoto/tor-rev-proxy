@@ -4,11 +4,10 @@ use std::{
 
 use arti_client::{TorClient, TorClientBuilder};
 use tokio::net::{TcpListener, TcpSocket};
-use tor_rtcompat::{tokio::PreferredRuntime, PreferredRuntime};
 use vec1::Vec1;
 
 use crate::{
-    controller::controller_api::ControllerConfig, main_process::{connection::ConnectionConfig, process::ProcessConfig}, renames::TorSocket, tools::{permission_list::PermissionList, traffic_rate::TrafficRate}, types::client_addr::ClientAddr
+    main_process::{connection::ConnectionConfig, process::ProcessConfig}, renames::TorSocket, tools::{permission_list::PermissionList, traffic_rate::TrafficRate}, types::client_addr::ClientAddr
 };
 
 pub fn get_init() -> Init {
@@ -24,7 +23,6 @@ pub struct InitBuilder {
     conn_configs			: ConnConfigBuilder,
     permission_list			: Option<PermissionList<ClientAddr>>,
     max_simultaneous_clients: Option<u64>,
-
 }
 
 pub struct ConnConfigBuilder {
@@ -54,7 +52,6 @@ pub struct Init {
     conn_mngr_cfgs			: ProcessConfig,
     conn_cfgs				: ConnectionConfig,
     ctrl_cfgs               : ControllerConfig,      
-
 }
 
 
@@ -63,38 +60,15 @@ impl Init {
     pub fn build_configs(&self) -> (ProcessConfig, ConnectionConfig) {
         (self.conn_mngr_cfgs.clone(), self.conn_cfgs.clone())
     }
-    pub fn build_client_socket(&self) -> Result<Vec<TcpListener>, anyhow::Error> {
-		let socket_ports = vec![413, 80];
-
-        let sockets = 
-            socket_ports
-            .into_iter()
-            .map(|port| -> Result<TcpListener, anyhow::Error>{
-                let socket = TcpSocket::new_v4()?;
-                socket.bind(
-                    SocketAddr::V4( SocketAddrV4::new(
-                        Ipv4Addr::UNSPECIFIED,
-                        port 
-                    ) )
-                )?;
-                Ok(socket.listen(self.conn_mngr_cfgs)?)
-            })
-        ;
-
-        let listener = socket.listen(self.max_simultaneous_clients)?;
-		Ok(listener)
-    }
-    pub fn build_host_socket(&self) -> Result<TorSocket, anyhow::Error> {
-
-    }
 }
 
 // Simple onion to tcp service router
 #[derive(clap::Parser)]
 pub struct InitArgs {
+
     // Port that will receive the requests
     // The tor host to which the requests will be forwarded to
-    #[arg(long="config-file", short='c', default_value_t=)]
+    #[arg(long="config-file", short='c', default_value_t=PathBuf::from_str("./rev_proxy_configs.yaml").unwrap())]
     default_configs_file: PathBuf,
 
 }

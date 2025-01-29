@@ -14,7 +14,6 @@ dashmap = "6.1.0"
 either = "1.13.0"
 futures = "0.3.31"
 http = "1.2.0"
-httparse = "1.9.5"
 rand = "0.8.5"
 regex = "1.11.1"
 replace_with = { version = "0.1.7", features = ["panic_abort"] }
@@ -22,12 +21,13 @@ serde = { version = "1.0.217", features = ["derive"] }
 socket2 = "0.5.8"
 tokio = { version = "1.43.0", features = ["rt", "rt-multi-thread", "full", "net", "socket2", "io-util"] }
 tokio-native-tls = "0.3.1"
+# tokio-native-tls = "0.3.1"
 tor-rtcompat = { version = "0.26.0", features = ["native-tls", "tokio"] }
 tryvial = "0.2.0"
-ureq = { version = "2.12.1", features = ["http-crate", "http-interop"] }
 url = "2.5.4"
 uuid = { version = "1.12.1", features = ["rng", "serde"] }
 vec1 = "1.12.1"
+webparse = "0.3.0"
 
 [profile.release]
 opt-level 		= 3

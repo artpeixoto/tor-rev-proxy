@@ -13,7 +13,9 @@ impl<T: Hash + Eq> Default for PermissionList<T> {
 	}
 }
 
-impl<T> PermissionList<T> where T: std::hash::Hash + Eq{
+impl<T> PermissionList<T> 
+	where T: Hash + Eq
+{
 	pub fn allows(&self, value: &T) -> bool {
 		match self{
 			PermissionList::Allow(allowed) => {

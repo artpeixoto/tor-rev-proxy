@@ -1,5 +1,5 @@
-use core::alloc;
-use std::{alloc::GlobalAlloc, array, collections::TryReserveError, marker::PhantomPinned, mem::{self, MaybeUninit}, ops::{Deref, Index, RangeBounds}, slice::{from_raw_parts_mut, SliceIndex}};
+use core::{alloc,};
+use std::{alloc::GlobalAlloc, array, collections::TryReserveError, marker::PhantomPinned, mem::{self, MaybeUninit}, ops::{Deref, Index, IndexMut, Range, RangeBounds, RangeFrom, RangeFull}, slice::{from_raw_parts_mut, SliceIndex}};
 
 use tor_rtcompat::test_with_all_runtimes;
 
@@ -106,6 +106,32 @@ impl<T> Index<usize> for SafeVec<T>{
 	}
 }
 
+impl<T> Index<Range<usize>> for SafeVec<T>{
+	type Output = [T];
+
+	fn index(&self, index: Range<usize>) -> &Self::Output {
+		self.inner_value.index(index)
+	}
+}
+impl<T> IndexMut<Range<usize>> for SafeVec<T>{
+	fn index_mut(&mut self, index: Range<usize>) -> &mut Self::Output {
+		self.inner_value.index_mut(index)
+	}
+}
+impl<T> Index<RangeFrom<usize>> for SafeVec<T>{
+	type Output = [T];
+
+	fn index(&self, index: RangeFrom<usize>) -> &Self::Output {
+		self.inner_value.index(index)
+	}
+}
+impl<T> IndexMut<RangeFrom<usize>> for SafeVec<T>{
+	fn index_mut(&mut self, index: RangeFrom<usize>) -> &mut Self::Output {
+		self.inner_value.index_mut(index)
+	}
+}
+
+
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Default, Hash)]
 pub struct SafeString{ inner_value: String }
@@ -158,5 +184,4 @@ impl SafeString{
 		self.reserve(str.len());
 		self.inner_value.push_str(str);
 	}
-	
 }

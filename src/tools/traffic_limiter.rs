@@ -3,15 +3,14 @@ use serde::{Deserialize, Serialize};
 
 pub struct TrafficLimiter{
 	max_rate				: TrafficRate,
-	accumulated_duration		: Option<Duration>
+	accumulated_duration	: Option<Duration>
 }
 
 impl TrafficLimiter{
 	pub fn add_traffic(&mut self, byte_count: usize) {
-		let duration = self.max_rate.get_duration_per_kilobyte() * (byte_count as f32 / 1024.0) ;
+		let duration = self.max_rate.get_duration_per_kilobyte().mul_f32( (byte_count as f32 / 1024.0) );
 
 		
-	
 		self.accumulated_duration = Some({
 			self.accumulated_duration.take().unwrap_or(Duration::ZERO)  
 		})

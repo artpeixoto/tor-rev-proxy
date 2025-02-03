@@ -1,5 +1,5 @@
 use std::{
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4}, path::PathBuf, time::Duration
+    collections::HashSet, net::{Ipv4Addr, SocketAddr, SocketAddrV4}, path::PathBuf, str::FromStr, time::Duration
 };
 
 use arti_client::{TorClient, TorClientBuilder};
@@ -7,7 +7,7 @@ use tokio::net::{TcpListener, TcpSocket};
 use vec1::Vec1;
 
 use crate::{
-    main_process::{connection::ConnectionConfig, process::ProcessConfig}, renames::TorSocket, tools::{permission_list::PermissionList, traffic_rate::TrafficRate}, types::client_addr::ClientAddr
+    main_process::{manager::ClientsPermissionList, connection::ConnectionConfig, listener::{ClientSocketsConfig, Listener}, sockets::client_sockets::SocketConfig}, renames::TorSocket, tools::{permission_list::PermissionList, traffic_limiter::TrafficRate }, types::client_addr::ClientAddr
 };
 
 pub fn get_init() -> Init {
@@ -15,21 +15,37 @@ pub fn get_init() -> Init {
 
 	// then, we must search for the base configuration file, and if none is found, create a new one with a few defaults.
 	
-	todo!()
+    Init { 
+        permission_list: PermissionList::Block(HashSet::new()),
+        conn_cfgs: ConnectionConfig { 
+            traffic_max_rate: TrafficRate::new(3000), 
+            poll_rate_duration: Duration::from_secs_f32(0.1), 
+            timeout: Duration::from_secs(5), 
+        }, 
+        client_sockets: ClientSocketsConfig{
+            client_tcp_socket_config: Some(SocketConfig{
+                max_clients: 1024,
+                port: 80,
+            }),
+            client_tls_socket_config: None,
+        }
+    }
 }
 
 
 pub struct InitBuilder {
     conn_configs			: ConnConfigBuilder,
     permission_list			: Option<PermissionList<ClientAddr>>,
-    max_simultaneous_clients: Option<u64>,
+    sockets_configs         : Option<u64>,
 }
+
 
 pub struct ConnConfigBuilder {
     traffic_max_rate    : Option<TrafficRate>,
     timeout             : Option<Duration>,
     poll_rate_duration  : Option<Duration>,
 }
+
 
 impl InitBuilder {
     pub fn new_empty() -> Self {
@@ -49,17 +65,15 @@ impl InitBuilder {
 }
 
 pub struct Init {
-    conn_mngr_cfgs			: ProcessConfig,
-    conn_cfgs				: ConnectionConfig,
-    ctrl_cfgs               : ControllerConfig,      
+    pub permission_list			: ClientsPermissionList,
+    pub conn_cfgs				: ConnectionConfig,
+    pub client_sockets          : ClientSocketsConfig,      
 }
 
 
 
 impl Init {
-    pub fn build_configs(&self) -> (ProcessConfig, ConnectionConfig) {
-        (self.conn_mngr_cfgs.clone(), self.conn_cfgs.clone())
-    }
+    
 }
 
 // Simple onion to tcp service router
@@ -68,7 +82,10 @@ pub struct InitArgs {
 
     // Port that will receive the requests
     // The tor host to which the requests will be forwarded to
-    #[arg(long="config-file", short='c', default_value_t=PathBuf::from_str("./rev_proxy_configs.yaml").unwrap())]
-    default_configs_file: PathBuf,
-
+    #[arg(
+        long="config-file", 
+        short='c', 
+        default_value_t={"./rev_proxy_configs.yaml".to_string()}
+    )]
+    default_configs_file: String,
 }

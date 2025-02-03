@@ -1,13 +1,14 @@
-use std::{ future::IntoFuture, net::{IpAddr, SocketAddr}, ops::Index, str::{from_utf8, FromStr}, sync::{Arc, Weak}, time::Duration};
-use crate::{host::HostAddrGetter, obliterate, renames::*, tools::{abort_on_drop_handle::{AodHandle, AodHandleExt}, safe_vec::{SafeString, SafeVec}, traffic_direction::TrafficDirection, traffic_limiter::TrafficRate}, types::{ client_addr::ClientAddr, endpoint::{self, Endpoint}}};
+use std::{ future::{Future, IntoFuture}, net::{IpAddr, SocketAddr}, ops::Index, str::{from_utf8, FromStr}, sync::{Arc, Weak}, time::Duration};
+use crate::{host::HostAddrGetter, obliterate, renames::*, tools::{abort_on_drop_handle::{AodHandle, AodHandleExt}, rate_limiter::RateLimiter, safe_vec::{SafeString, SafeVec}, traffic_direction::TrafficDirection, traffic_limiter::TrafficRate}, types::{ client_addr::ClientAddr, endpoint::{self, Endpoint}}};
 use either::Either::{self, Left, Right};
+use futures::FutureExt;
 use replace_with::replace_with;
 use serde::{Deserialize, Serialize};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt, Interest}, net::TcpStream, select, sync::{broadcast::Sender, OnceCell}, task::{AbortHandle, JoinHandle}};
 use url::Url;
 use webparse::{HeaderName, WebError};
 
-use super::sockets::client_sockets::ClientStream;
+use super::sockets::{client_sockets::ClientStream, host_socket::{self, build_host_socket}};
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize , Debug)]
 pub struct ConnectionConfig{
@@ -19,21 +20,33 @@ pub struct ConnectionConfig{
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize)]
 pub enum ConnectionEvent{
     ConnectionEstabilished,
+
 	TrafficHappened{
-		dir			: TrafficDirection, 
-		other_part	: Endpoint, 
-		data_len	: usize
+		source		: Endpoint, 
+		byte_count	: usize
 	},	
-    ConnectionClosed(),
+
+    ConnectionClosed(
+		ConnectionClosedReason
+	)
 }
 
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize)]
 pub enum ConnectionClosedReason{
+	DisconnectedByHost,
+	DisconnectedByClient,
+	ErrorHappened(String),
 	TimedOut,
 }
+impl ConnectionClosedReason{
+	pub fn error(err: anyhow::Error) -> Self{
+		Self::ErrorHappened(format!("{err}"))
+	}
+}
 
-pub struct ConnectionTaskInit{
-	event_sender	: BroadcastSender<ConnectionEvent>,
-	config_reader   : WatchReceiver<ConnectionConfig>,
+pub struct ConnectionTask{
+	event_sender	: ConnectionEventSender,
+	config   		: WatchReceiver<ConnectionConfig>,
 
 	client_stream	: ClientStream,
 	host_stream		: TorStream,
@@ -41,38 +54,116 @@ pub struct ConnectionTaskInit{
 	host_addr_getter: HostAddrGetter,
 }
 
+pub struct ConnectionEventSender{
+	client_addr			: ClientAddr,
+	inner_global_sender	: BroadcastSender<(ClientAddr, ConnectionEvent)>
+}
+
+impl ConnectionEventSender{
+	pub fn new(client_addr: ClientAddr, inner_global_sender: BroadcastSender<(ClientAddr, ConnectionEvent)>) -> Self {
+			Self { client_addr, inner_global_sender }
+		}
+	
+	pub fn send(&mut self, event: ConnectionEvent) -> Result<usize, anyhow::Error>{
+		Ok(self.inner_global_sender.send((self.client_addr.clone(), event))?)
+	}
+}
+
+
 pub struct ConnectionTaskHandle(
 	AodHandle<Result<(), anyhow::Error>>
 );
 
-impl ConnectionTaskInit{
-	pub fn run(self) -> ConnectionTaskHandle{
-		ConnectionTaskHandle(tokio::spawn(self.run_internal()).aod_handle())
+impl Future for ConnectionTaskHandle{
+	type Output = Result<(), anyhow::Error>;
+
+	fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+		let a = self.0.poll_unpin(cx)?;
+		a
+	}
+}
+
+
+impl ConnectionTask{
+	pub fn new(event_sender: ConnectionEventSender, config: WatchReceiver<ConnectionConfig>, client_stream: ClientStream, host_stream: TorStream, host_addr_getter: HostAddrGetter) -> Self {
+			Self { event_sender, config, client_stream, host_stream, host_addr_getter }
+		}
+	
+	pub fn run(mut self) -> ConnectionTaskHandle{
+		let task = Box::pin(async move{
+			let run_res = self.run_internal().await;
+			run_res
+		});
+		ConnectionTaskHandle(tokio::spawn(task).aod_handle())
 	}
 
-	async fn run_internal(mut self) -> Result<(), anyhow::Error>{
+	async fn run_internal(&mut self) -> Result<(), anyhow::Error>{
 		#![allow(unreachable_code)]
 
 		let mut client_read_buf = SafeVec::new_from_vec(vec![0_u8;16*1024]);
 		let mut host_read_buf   = SafeVec::new_from_vec(vec![0_u8;64*1024]);
 
-		'_TASK_LOOP: loop {
-			select!{
-				client_read_res = self.client_stream.read( client_read_buf.as_mut()) => {
-					let read_count = client_read_res?;	
-					self.send_from_client_to_host(&mut client_read_buf, read_count).await?;
-				},
-				host_read_res = self.host_stream.read(host_read_buf.as_mut()) => {
-					let read_count = host_read_res?;
-					self.send_from_host_to_client(&mut host_read_buf, read_count).await?;
+		let res: ConnectionClosedReason = {
+			macro_rules! err{
+				( $val:expr ; $err_val:expr) => {
+					match $val{
+						Ok(inner_val) => inner_val,
+						Err(_) => { return $err_val; }
+					}
+				};
+				($val:expr) => {
+					match $val{
+						Ok(inner_val) => inner_val,
+						Err(inner_err) => {return ConnectionClosedReason::error(inner_err);}
+					}
 				}
 			}
-		}
 
-		let _ = self.event_sender.send(ConnectionEvent::ConnectionClosed());
+			async { 
+				'TASK_LOOP: loop {
+					let timeout =  tokio::time::sleep(self.config.borrow_and_update().timeout.clone());
+
+					select!{
+						() = timeout => {
+							break 'TASK_LOOP ConnectionClosedReason::TimedOut;
+						} ,
+
+						client_read_res = self.client_stream.read( client_read_buf.as_mut()) => {
+							let read_count = err!(client_read_res;ConnectionClosedReason::DisconnectedByClient);
+
+							err!(self.event_sender.send(ConnectionEvent::TrafficHappened{source: Endpoint::Client, byte_count: read_count}));
+
+							err!(self.send_from_client_to_host(&mut client_read_buf, read_count).await);			
+						},
+
+						host_read_res = self.host_stream.read(host_read_buf.as_mut()) => {
+							let read_count = err!(host_read_res; ConnectionClosedReason::DisconnectedByHost);
+
+							err!(
+								self.event_sender.send(ConnectionEvent::TrafficHappened{ 
+									source 		: Endpoint::Host, 
+									byte_count	: read_count, 
+								})
+							);
+
+							err!(
+								self.send_from_host_to_client(
+									&mut host_read_buf, 
+									read_count
+								).await
+							);
+						}
+					}
+				}
+			}
+			.await
+		};
+
+		let _ = self.event_sender.send(ConnectionEvent::ConnectionClosed(res));
 
 		Ok(())
 	}
+
 
 	async fn send_from_client_to_host(
 		&mut self, 
@@ -183,62 +274,23 @@ impl ConnectionTaskInit{
 	}
 }
 
-pub struct ConnectionInit{
-	pub client_addr		: ClientAddr,
-
-	pub client_stream	: ClientStream,
-	pub host_socket		: TorSocket,	
-
-	pub config_reader	: WatchReceiver<ConnectionConfig>,
-	pub host_addr_getter: HostAddrGetter,
-	pub input_port		: u16,
-}
-
-impl ConnectionInit{
-	pub async fn build_connection(self) ->  
-		Result<(ConnectionController, ConnectionTaskHandle), anyhow::Error>
-	{
-		let (evt_sender, evt_receiver) = broadcast_channel(64);
-
-		let host_stream = self.host_socket.connect((self.host_addr_getter.get_host_addr().as_ref(), self.input_port)).await?;
-
-		let conn = ConnectionTaskInit{
-			event_sender: evt_sender,
-			config_reader: self.config_reader,
-			client_stream: self.client_stream,
-			host_stream,
-			host_addr_getter: self.host_addr_getter,
-		};
-
-		let tasks = Vec::new();
-		let conn_handle = conn.run();
-
-		let conn_ctrl = ConnectionController{
-			addr			: self.client_addr,
-			evt_receiver	: evt_receiver,
-			tasks,
-		};
-		
-		Ok((conn_ctrl, conn_handle))
-	}
-}
-
 pub struct ConnectionController{
-	addr				: ClientAddr,
-	evt_receiver		: BroadcastReceiver<ConnectionEvent>,
+	client_addr			: ClientAddr,
 	tasks				: Vec<AodHandle<Result<(), anyhow::Error>>>,
 }
 
 impl ConnectionController{
+
+	pub fn new(client_addr: ClientAddr, tasks: Vec<AodHandle<Result<(), anyhow::Error>>>) -> Self {
+			Self { client_addr, tasks }
+		}
+	
 	pub fn client_addr(&self) -> &ClientAddr{
-		&self.addr
-	}
-	pub fn subscribe_to_events(&self) -> BroadcastReceiver<ConnectionEvent>{
-		self.evt_receiver.resubscribe()
+		&self.client_addr
 	}
 
-	pub fn add_to_dependent_tasks<T>(&mut self, task: JoinHandle<T>) {
-		self.tasks.push(task.get_abort_on_drop_handle());
+	pub fn add_to_dependent_tasks(&mut self, task: JoinHandle<Result<(), anyhow::Error>>) {
+		self.tasks.push(task.aod_handle());
 	}
 }
 

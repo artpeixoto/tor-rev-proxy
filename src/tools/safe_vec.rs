@@ -145,13 +145,14 @@ impl AsRef<str> for SafeString{
 
 impl AsMut<str> for SafeString{
 	fn as_mut(&mut self) -> &mut str {
-		todo!()
+		&mut self.inner_value
 	}
 }
 
 impl Drop for SafeString{
 	fn drop(&mut self) {
-		todo!()
+		let inner_vec = mem::replace(&mut self.inner_value, String::new()).into_bytes();
+		clean_vec(inner_vec);
 	}
 }
 

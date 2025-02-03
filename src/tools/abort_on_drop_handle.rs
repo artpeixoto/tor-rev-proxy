@@ -1,4 +1,4 @@
-use std::{future::IntoFuture, pin::Pin, task::{Context, Poll, Waker}};
+use std::{future::{Future, IntoFuture}, pin::Pin, task::{Context, Poll, Waker}};
 
 use ::futures::FutureExt;
 use tokio::task::{AbortHandle, JoinError, JoinHandle};
@@ -9,17 +9,22 @@ use tokio::task::{AbortHandle, JoinError, JoinHandle};
 pub struct AodHandle<T>(
 	JoinHandle<T>
 );
+impl<T> Future for AodHandle<T>{
+	type Output = Result<T, JoinError>;
 
+	fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+		self.as_mut().0.poll_unpin(cx)
+	}
+}
 impl<T> AodHandle<T>{
-	pub fn close(self) -> TaskAbortedRes<T>{
-		let handle = self.0;
-		if handle.is_finished{
+	pub fn close(mut self) -> TaskAbortedRes<T>{
+		if self.0.is_finished(){
 			let noop_waker = futures::task::noop_waker_ref();
 			let mut cx = Context::from_waker(&noop_waker);
 			// although the task is finished, it could be possible that some work remains to be done.
 			// we finish that and get the result
 			'FINISH_TASK: loop {
-				if let Poll::Ready(res) = handle.poll_unpin(&mut cx){
+				if let Poll::Ready(res) = self.0.poll_unpin(&mut cx){
 					break 'FINISH_TASK match res{
 						Ok(successful_res) => TaskAbortedRes::FinishedSuccessfully(successful_res),
 						Err(error_res) => TaskAbortedRes::FinishedWithError(error_res),
@@ -27,7 +32,7 @@ impl<T> AodHandle<T>{
 				}
 			}
 		} else {
-			handle.abort();
+			self.0.abort();
 			TaskAbortedRes::Aborted
 		}
 	}
@@ -48,13 +53,13 @@ impl<T> Drop for AodHandle<T>{
 
 pub trait AodHandleExt{
 	type R;
-	fn aod_handle(&self) -> AodHandle<Self::R>; 
+	fn aod_handle(self) -> AodHandle<Self::R>; 
 }
 
 impl<T> AodHandleExt for JoinHandle<T>{
 	type R = T;
-	fn aod_handle(&self) -> AodHandle<T> {
-		AodHandle(self.abort_handle())
+	fn aod_handle(self) -> AodHandle<T> {
+		AodHandle(self)
 	}
 }
 

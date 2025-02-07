@@ -17,7 +17,7 @@ pub struct ConnectionConfig{
     pub timeout             : Duration
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum ConnectionEvent{
     ConnectionEstabilished,
 
@@ -26,18 +26,17 @@ pub enum ConnectionEvent{
 		byte_count	: usize
 	},	
 
-    ConnectionClosed(
-		ConnectionClosedReason
-	)
+    ConnectionClosed(ConnectionClosedReason)
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum ConnectionClosedReason{
 	DisconnectedByHost,
 	DisconnectedByClient,
 	ErrorHappened(String),
 	TimedOut,
 }
+
 impl ConnectionClosedReason{
 	pub fn error(err: anyhow::Error) -> Self{
 		Self::ErrorHappened(format!("{err}"))

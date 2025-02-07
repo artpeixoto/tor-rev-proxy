@@ -11,6 +11,7 @@ arti-client = {version = "0.26.0", features = ["static", "onion-service-client",
 async-stream = "0.3.6"
 axum = "0.8.1"
 clap = { version = "4.5.26", features = ["derive"] }
+config = "0.15.7"
 console-subscriber = "0.4.1"
 crossterm = "0.28.1"
 cryptify = "3.1.1"

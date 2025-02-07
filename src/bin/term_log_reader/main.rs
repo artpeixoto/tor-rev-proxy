@@ -13,5 +13,7 @@ use strum::{Display, EnumIter, FromRepr, IntoEnumIterator};
 fn main() -> Result<(), anyhow::Error> {
     let terminal = ratatui::init();
     ratatui::restore();
-    app_result
+    Ok(())
+
 }
+

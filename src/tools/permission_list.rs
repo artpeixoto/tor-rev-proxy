@@ -7,6 +7,7 @@ pub enum PermissionList<T: Hash + Eq>{
     Block(HashSet<T>),
     Allow(HashSet<T>),
 }
+
 impl<T: Hash + Eq> Default for PermissionList<T> {
 	fn default() -> Self {
 		PermissionList::Block(HashSet::new())

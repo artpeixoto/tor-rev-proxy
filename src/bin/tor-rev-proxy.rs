@@ -27,11 +27,11 @@ async fn main() -> Result<(), anyhow::Error> {
     let (permission_list_writer, permission_list_reader) = watch_channel(init.permission_list);
     let (sockets_config_writer, sockets_config_reader) = watch_channel(init.client_sockets);
 
-    let (builder_events_sender, builder_events_receiver) = broadcast_channel(1024);
-    let (listener_events_sender, listener_events_receiver) = broadcast_channel(1024);
+    let (builder_events_sender, builder_events_receiver)    = broadcast_channel(1024);
+    let (listener_events_sender, listener_events_receiver)  = broadcast_channel(1024);
 
-    let (conn_events_sender, conn_events_receiver) = broadcast_channel(2048);
-    let (connections_sender, connections_receiver) = mpsc_channel(256);
+    let (conn_events_sender, conn_events_receiver)          = broadcast_channel(2048);
+    let (connections_sender, connections_receiver)          = mpsc_channel(256);
 
 
     let mut evt_logger = EventLogger::new(
@@ -77,7 +77,7 @@ async fn main() -> Result<(), anyhow::Error> {
         conn_events_receiver,
         connections,
     );
-
+    
     debug!("Spawning event logger");
     tokio::spawn(async move{ evt_logger.run().await });
     tokio::spawn(async move{ controller.run_api().await.unwrap() });

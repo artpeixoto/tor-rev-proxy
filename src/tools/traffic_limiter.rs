@@ -1,21 +1,25 @@
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
+use tokio::time::Instant;
 
 pub struct TrafficLimiter{
-	max_rate				: TrafficRate,
-	accumulated_duration	: Option<Duration>
+	max_rate	: TrafficRate,
+	deadline	: Option<Instant>
 }
 
 impl TrafficLimiter{
 	pub fn add_traffic(&mut self, byte_count: usize) {
 		let duration = self.max_rate.get_duration_per_kilobyte().mul_f32( (byte_count as f32 / 1024.0) );
-
-		
-		self.accumulated_duration = Some({
-			self.accumulated_duration.take().unwrap_or(Duration::ZERO)  
-		})
+		self.deadline = Some(Instant::now() + duration);
 	}
-
+	pub async fn limit_rate(&mut self) {
+		let now = Instant::now();
+		if let Some(deadline) = self.deadline.take() {
+			if deadline > now {
+				tokio::time::sleep_until(deadline).await;
+			}
+		}
+	}
 }
 
 

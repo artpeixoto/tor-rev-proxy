@@ -5,7 +5,7 @@ use clap::Parser;
 use futures::FutureExt;
 use log::{debug, error};
 use tor_rev_proxy::{
-    controller::controller::Controller, host::HostAddrGetter, init::get_init, logger::EventLogger, main_process::{conn_builder::ConnectionBuilder, listener::Listener, manager::Manager}, renames::{broadcast_channel, mpsc_channel, watch_channel}
+    controller::controller::Controller, host::HostAddrGetter, init::get_init, logger::EventLogger, main_process::{conn_builder::ConnectionBuilder, listener::Listener, manager::Manager}, renames::{broadcast_channel, mpsc_channel, watch_channel}, tools::event_channel
 };
 
 use tokio::{
@@ -27,17 +27,17 @@ async fn main() -> Result<(), anyhow::Error> {
     let (permission_list_writer, permission_list_reader) = watch_channel(init.permission_list);
     let (sockets_config_writer, sockets_config_reader) = watch_channel(init.client_sockets);
 
-    let (builder_events_sender, builder_events_receiver)    = broadcast_channel(1024);
-    let (listener_events_sender, listener_events_receiver)  = broadcast_channel(1024);
+    let (builder_events_sender, builder_events_receiver)    = event_channel::channel(1024);
+    let (listener_events_sender, listener_events_receiver)  = event_channel::channel(1024);
 
-    let (conn_events_sender, conn_events_receiver)          = broadcast_channel(2048);
+    let (conn_events_sender, conn_events_receiver)          = event_channel::channel(2048);
     let (connections_sender, connections_receiver)          = mpsc_channel(256);
 
 
     let mut evt_logger = EventLogger::new(
-        &conn_events_receiver, 
-        &builder_events_receiver, 
-        &listener_events_receiver
+        conn_events_receiver.resubscribe(), 
+        builder_events_receiver.resubscribe(), 
+        listener_events_receiver.resubscribe(),
     );
 
     let connection_builder =

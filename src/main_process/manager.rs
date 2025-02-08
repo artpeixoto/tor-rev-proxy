@@ -4,7 +4,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tokio::{select, sync::watch::Receiver};
 
-use crate::{renames::{BroadcastSender, MpscReceiver, WatchReceiver}, tools::permission_list::{self, PermissionList}, types::client_addr::ClientAddr};
+use crate::{renames::{MpscReceiver, WatchReceiver}, tools::permission_list::{self, PermissionList}, types::client_addr::ClientAddr};
 
 use super::{conn_builder::ConnectionBuilder, connection::ConnectionController, sockets::client_sockets::ClientStream};
 

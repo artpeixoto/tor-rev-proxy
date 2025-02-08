@@ -1,11 +1,11 @@
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use tokio::select;
-use crate::{main_process::{conn_builder::BuilderEvent, connection::ConnectionEvent, listener::ListenerEvent}, renames::BroadcastReceiver, types::client_addr::ClientAddr};
+use crate::{main_process::{conn_builder::BuilderEvent, connection::ConnectionEvent, listener::ListenerEvent}, tools::event_channel::EventReceiver, types::client_addr::ClientAddr};
 pub struct EventLogger{
-	pub connection_events_receiver	: BroadcastReceiver<(ClientAddr, ConnectionEvent)>,
-	pub builder_events_receiver		: BroadcastReceiver<BuilderEvent>,
-	pub listener_events_receiver	: BroadcastReceiver<ListenerEvent>,
+	pub connection_events_receiver	: EventReceiver<(ClientAddr, ConnectionEvent)>,
+	pub builder_events_receiver		: EventReceiver<BuilderEvent>,
+	pub listener_events_receiver	: EventReceiver<ListenerEvent>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -38,14 +38,14 @@ impl From<ListenerEvent> for Event{
 
 impl EventLogger{
 	pub fn new(
-		connection_events_receiver	: &BroadcastReceiver<(ClientAddr, ConnectionEvent)>,
-		builder_events_receiver		: &BroadcastReceiver<BuilderEvent>,
-		listener_events_receiver	: &BroadcastReceiver<ListenerEvent>,
+		connection_events_receiver	: EventReceiver<(ClientAddr, ConnectionEvent)>,
+		builder_events_receiver		: EventReceiver<BuilderEvent>,
+		listener_events_receiver	: EventReceiver<ListenerEvent>,
 	) -> Self {
 		Self { 
-			connection_events_receiver: connection_events_receiver.resubscribe(),
-			builder_events_receiver: builder_events_receiver.resubscribe(),
-			listener_events_receiver: listener_events_receiver.resubscribe(), 
+			connection_events_receiver: connection_events_receiver,
+			builder_events_receiver: builder_events_receiver,
+			listener_events_receiver: listener_events_receiver,
 		}
 	}
 	pub async fn run(&mut self) {

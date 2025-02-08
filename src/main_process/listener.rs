@@ -3,6 +3,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::{ sync::Arc};
 use super::manager::ClientsPermissionList;
 use super::sockets::client_sockets::{self, ClientSockets, ClientStream, SocketConfig, TlsAcceptorConfig};
+use crate::tools::event_channel::EventSender;
 use crate::{init, renames::*};
 use crate::{
     types::client_addr::{self, ClientAddr},
@@ -32,7 +33,7 @@ pub enum ListenerEvent{
 pub struct Listener {
     config_reader           : WatchReceiver<ClientSocketsConfig>,
     client_permission_list  : WatchReceiver<ClientsPermissionList>,
-    event_sender            : BroadcastSender<ListenerEvent>,
+    event_sender            : EventSender<ListenerEvent>,
     client_sockets          : ClientSockets,
     new_conns_sender        : MpscSender<(ClientStream, ClientAddr)>,
 }
@@ -42,15 +43,22 @@ impl Listener {
     
     pub fn new(
         mut config_reader   : WatchReceiver<ClientSocketsConfig>,
-        event_sender        : BroadcastSender<ListenerEvent>, 
+        mut event_sender        : EventSender<ListenerEvent>, 
         new_conns_sender    : MpscSender<(ClientStream, ClientAddr)>,
         client_permission_list  : WatchReceiver<ClientsPermissionList>,
     ) -> Result<Self, anyhow::Error> {
         let configs = config_reader.borrow_and_update();
-        let _ = event_sender.send(ListenerEvent::SocketsConfigIs(configs.clone()));
 
+        let _ = event_sender.send(ListenerEvent::SocketsConfigIs(configs.clone()));
         let _ = event_sender.send(ListenerEvent::BuildingSockets);
-        let client_sockets = ClientSockets::build_client_sockets(&configs.client_tcp_socket_config, &configs.client_tls_socket_config).unwrap();
+
+        let client_sockets = 
+            ClientSockets
+            ::build_client_sockets(
+                &configs.client_tcp_socket_config, 
+                &configs.client_tls_socket_config
+            )
+            .unwrap();
         let _ = event_sender.send(ListenerEvent::SocketsBuilt);
         drop(configs);
 
@@ -83,7 +91,7 @@ impl Listener {
         Ok(())
     }
 
-    pub fn build_sockets(configs: &ClientSocketsConfig, event_sender        : &mut BroadcastSender<ListenerEvent>) -> Result<ClientSockets, anyhow::Error> {
+    pub fn build_sockets(configs: &ClientSocketsConfig, event_sender        : &mut EventSender<ListenerEvent>) -> Result<ClientSockets, anyhow::Error> {
         let _ = event_sender.send(ListenerEvent::SocketsConfigIs(configs.clone()));
         let _ = event_sender.send(ListenerEvent::BuildingSockets);
 

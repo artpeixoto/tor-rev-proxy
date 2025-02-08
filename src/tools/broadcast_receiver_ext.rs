@@ -1,5 +1,7 @@
 use std::time::SystemTime;
 
+use chrono::{DateTime, Local};
+
 use crate::renames::*;
 
 use super::event_channel::EventReceiver;
@@ -30,7 +32,7 @@ impl<T: Clone> ReceiverExt for BroadcastReceiver<T>{
 }
 
 impl<T: Clone> ReceiverExt for EventReceiver<T>{
-    type T = (SystemTime, T);
+    type T = (DateTime<Local>, T);
 
     fn recv_all(&mut self) -> Result<Vec<Self::T>, anyhow::Error> {
         use crate::tools::event_channel::TryRecvError;

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{host::HostAddrGetter, renames::*, types::client_addr::ClientAddr};
+use crate::{host::HostAddrGetter, renames::*, tools::event_channel::EventSender, types::client_addr::ClientAddr};
 
 use super::{
     connection::{
@@ -17,19 +17,19 @@ pub enum BuilderEvent {
     FullConnectionBuilt,
 }
 pub struct ConnectionBuilder {
-	event_sender			: BroadcastSender<BuilderEvent>,
+	event_sender			: EventSender<BuilderEvent>,
     conn_config_reader		: WatchReceiver<ConnectionConfig>,
-    conn_global_event_sender: BroadcastSender<(ClientAddr, ConnectionEvent)>,
+    conn_global_event_sender: EventSender<(ClientAddr, ConnectionEvent)>,
     host_addr_getter		: HostAddrGetter,
     host_socket				: TorSocket,
 }
 
 impl ConnectionBuilder {
     pub async fn new(
-		event_sender: BroadcastSender<BuilderEvent>,
+		mut event_sender: EventSender<BuilderEvent>,
         host_addr_getter: HostAddrGetter,
         conn_config_reader: WatchReceiver<ConnectionConfig>,
-        conn_evt_sender: BroadcastSender<(ClientAddr, ConnectionEvent)>,
+        conn_evt_sender: EventSender<(ClientAddr, ConnectionEvent)>,
     ) -> Result<Self, anyhow::Error> {
 		let _ = event_sender.send(BuilderEvent::CreatingHostSocket);
         let host_socket = build_host_socket().await?;

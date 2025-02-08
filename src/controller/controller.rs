@@ -1,19 +1,18 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::SystemTime};
 
+use chrono::{DateTime, Local};
 use dashmap::DashMap;
 
 use crate::{
     logger::Event,
     main_process::{
         conn_builder::BuilderEvent,
-        connection::{
-            ConnectionConfig, ConnectionController, ConnectionEvent, ConnectionTaskHandle,
-        },
-        listener::{ClientSocketsConfig, Listener, ListenerEvent},
+        connection::{ConnectionConfig, ConnectionController, ConnectionEvent},
+        listener::{ClientSocketsConfig, ListenerEvent},
         manager::{ClientsPermissionList, ConnectionKey},
     },
-    renames::{BroadcastReceiver, WatchSender},
-    tools::broadcast_receiver_ext::ReceiverExt,
+    renames::WatchSender,
+    tools::{broadcast_receiver_ext::ReceiverExt, event_channel::EventReceiver},
     types::client_addr::ClientAddr,
 };
 
@@ -24,17 +23,36 @@ pub struct Controller {
 }
 
 pub struct EventsListeners {
-    connections: BroadcastReceiver<(ClientAddr, ConnectionEvent)>,
-    builder: BroadcastReceiver<BuilderEvent>,
-    listener: BroadcastReceiver<ListenerEvent>,
+    connections: EventReceiver<(ClientAddr, ConnectionEvent)>,
+    builder: EventReceiver<BuilderEvent>,
+    listener: EventReceiver<ListenerEvent>,
 }
 impl EventsListeners {
-    pub fn read_all(&mut self) -> Result<Vec<Event>, anyhow::Error> {
+    pub fn read_all(&mut self) -> Result<Vec<(DateTime<Local>, Event)>, anyhow::Error> {
         let mut events = Vec::new();
 
-        events.extend(self.builder.recv_all()?.into_iter().map(Into::into));
-        events.extend(self.connections.recv_all()?.into_iter().map(Into::into));
-        events.extend(self.listener.recv_all()?.into_iter().map(Into::into));
+        events.extend(
+            self.builder
+            .recv_all()?
+            .into_iter()
+            .map(|(t, e)| (t, e.into())),
+        );
+
+        events.extend(
+            self.connections
+            .recv_all()?
+            .into_iter()
+            .map(|(t, e)| (t, e.into())),
+        );
+
+        events.extend(
+            self.listener
+            .recv_all()?
+            .into_iter()
+            .map(|(t, e)| (t, e.into())),
+        );
+
+        events.sort_by_key(|(st, _e)| *st);
 
         Ok(events)
     }
@@ -51,9 +69,9 @@ impl Controller {
         client_permission_list: WatchSender<ClientsPermissionList>,
         connections_config: WatchSender<ConnectionConfig>,
 
-        listener_event_listener: BroadcastReceiver<ListenerEvent>,
-        builder_event_listener: BroadcastReceiver<BuilderEvent>,
-        connections_event_listener: BroadcastReceiver<(ClientAddr, ConnectionEvent)>,
+        listener_event_listener: EventReceiver<ListenerEvent>,
+        builder_event_listener: EventReceiver<BuilderEvent>,
+        connections_event_listener: EventReceiver<(ClientAddr, ConnectionEvent)>,
 
         connections: Arc<DashMap<ConnectionKey, ConnectionController>>,
     ) -> Self {
@@ -79,6 +97,9 @@ pub const CONTROLLER_API_PIPE: &str = r"127.0.0.1:8080";
 pub mod controller_api {
     pub mod api {
 
+        use std::time::SystemTime;
+
+        use chrono::{DateTime, Local};
         use http::Method;
         use serde::{de::DeserializeOwned, Serialize};
 
@@ -90,7 +111,7 @@ pub mod controller_api {
             },
             types::client_addr::ClientAddr,
         };
-        
+
         pub const API_BASE_ADDR: &str = "/tor-rev-proxy/controller";
 
         pub trait ApiMethodDefn {
@@ -99,7 +120,6 @@ pub mod controller_api {
             type Arg: Serialize + DeserializeOwned;
             type Ret: DeserializeOwned + Serialize;
         }
-
 
         macro_rules! define_api_method{
             ($type_name:ident = $method:ident $path:literal : $arg_ty:ty => $ret_ty:ty) => {
@@ -130,7 +150,7 @@ pub mod controller_api {
                 GET "/config/connections/": ()  => ConnectionConfig;
 
             GET_EVENTS =
-                GET "/events/": () => Vec<Event>;
+                GET "/events/": () => Vec<(DateTime<Local>, Event)>;
 
             GET_CURRENT_CONNECTIONS =
                 GET "/state/connections/" : () => Vec<ClientAddr>;
@@ -140,59 +160,68 @@ pub mod controller_api {
 
         );
     }
-    pub mod client {
-        use std::str::FromStr;
 
-        use reqwest::{Body, Client};
-        use tokio::net::TcpSocket;
+    pub mod client {
+        use std::{str::FromStr, time::SystemTime};
+
+        use chrono::{DateTime, Local};
+        use reqwest::{Client};
         use url::Url;
 
-        use crate::{logger::Event, main_process::{connection::ConnectionConfig, manager::ClientsPermissionList}, types::client_addr::ClientAddr};
+        use crate::{
+            logger::Event,
+            main_process::{connection::ConnectionConfig, manager::ClientsPermissionList},
+            types::client_addr::ClientAddr,
+        };
 
-        use super::api::{ApiMethodDefn, API_BASE_ADDR, GET_CONNECTIONS_CONFIGS, GET_CURRENT_CONNECTIONS, GET_EVENTS, GET_PERMISSION_LIST};
+        use super::api::{
+            ApiMethodDefn, API_BASE_ADDR, GET_CONNECTIONS_CONFIGS, GET_CURRENT_CONNECTIONS,
+            GET_EVENTS, GET_PERMISSION_LIST,
+        };
 
         pub struct ControllerClient {
-            client: Client
+            client: Client,
         }
 
         pub struct ConnectionError;
-        impl ControllerClient{
-
-            pub async fn get_events(&mut self) -> Result<Vec<Event>, anyhow::Error>{
+        impl ControllerClient {
+            pub fn new() -> Self{
+                Self{client:Client::new()}
+            }
+            pub async fn get_events(&mut self) -> Result<Vec<(DateTime<Local>, Event)>, anyhow::Error> {
                 self.call_method::<GET_EVENTS>(()).await
             }
-            pub async fn get_connections_config(&mut self) -> Result<ConnectionConfig, anyhow::Error>{
+            pub async fn get_connections_config(
+                &mut self,
+            ) -> Result<ConnectionConfig, anyhow::Error> {
                 self.call_method::<GET_CONNECTIONS_CONFIGS>(()).await
             }
-            pub async fn get_current_connections(&mut self) -> Result<Vec<ClientAddr>, anyhow::Error>{
+            pub async fn get_current_connections(
+                &mut self,
+            ) -> Result<Vec<ClientAddr>, anyhow::Error> {
                 self.call_method::<GET_CURRENT_CONNECTIONS>(()).await
             }
-            pub async fn get_permission_list(&mut self) -> Result<ClientsPermissionList, anyhow::Error>{
+            pub async fn get_permission_list(
+                &mut self,
+            ) -> Result<ClientsPermissionList, anyhow::Error> {
                 self.call_method::<GET_PERMISSION_LIST>(()).await
-            } 
-            pub async fn get_current_connections(&mut self) -> Result<Vec<ClientAddr>, anyhow::Error> {
-                self.call_method::<GET_CURRENT_CONNECTIONS>(()).await
             }
-            pub async fn call_method<M: ApiMethodDefn>(&mut self, args: <M as ApiMethodDefn>::Arg) -> Result<<M as ApiMethodDefn>::Ret, anyhow::Error> {
-                
-                let resp = 
-                    self.client
-                    .request( 
-                        <M as ApiMethodDefn>::METHOD, 
-                        Url::from_str(&format!(
-                                "127.0.0.1:8080{}{}",
-                                API_BASE_ADDR, 
-                                M::PATH
-                            ))
-                            .unwrap()
-                    )
-                    .json(&args)
-                    .send().await?
-                    .error_for_status()?
-                    .json().await?;
-                    
-                Ok(resp)                    
 
+            pub async fn call_method<M: ApiMethodDefn>(
+                &mut self,
+                args: <M as ApiMethodDefn>::Arg,
+            ) -> Result<<M as ApiMethodDefn>::Ret, anyhow::Error> {
+                let resp = self
+                    .client
+                    .request(
+                        <M as ApiMethodDefn>::METHOD,
+                        Url::from_str(&format!("http://127.0.0.1:8080{}{}", API_BASE_ADDR, M::PATH))
+                            .unwrap(),
+                    )
+                    .json(&args).send().await?
+                    .error_for_status()?.json().await?;
+
+                Ok(resp)
             }
         }
     }
@@ -203,12 +232,7 @@ pub mod controller_api {
         use axum::{extract::State, routing::get, Json, Router};
         use tokio::{net::TcpListener, sync::RwLock};
 
-        use crate::{
-            main_process::
-                connection::ConnectionConfig
-            ,
-            types::client_addr::ClientAddr,
-        };
+        use crate::{main_process::connection::ConnectionConfig, types::client_addr::ClientAddr};
 
         use super::{
             super::Controller,
@@ -281,6 +305,7 @@ pub mod controller_api {
         ) -> Json<<GET_EVENTS as ApiMethodDefn>::Ret> {
             Json(state.write().await.events_listeners.read_all().unwrap())
         }
+
         pub async fn get_current_connections(state: ControllerState) -> Json<Vec<ClientAddr>> {
             Json(
                 state
@@ -292,8 +317,5 @@ pub mod controller_api {
                     .collect(),
             )
         }
-        // pub async fn get_connections_clients(state: State<Arc<RwLock<Controller>>>) -> Json<Vec<>>{
-
-        // }
     }
 }

@@ -1,5 +1,5 @@
-use std::{ future::{Future, IntoFuture}, net::{IpAddr, SocketAddr}, ops::Index, str::{from_utf8, FromStr}, sync::{Arc, Weak}, time::Duration};
-use crate::{host::HostAddrGetter, obliterate, renames::*, tools::{abort_on_drop_handle::{AodHandle, AodHandleExt}, rate_limiter::RateLimiter, safe_vec::{SafeString, SafeVec}, traffic_direction::TrafficDirection, traffic_limiter::TrafficRate}, types::{ client_addr::ClientAddr, endpoint::{self, Endpoint}}};
+use std::{ fmt::Error, future::Future, str::{from_utf8, FromStr}, time::Duration};
+use crate::{host::HostAddrGetter, obliterate, renames::*, tools::{abort_on_drop_handle::{AodHandle, AodHandleExt}, event_channel::EventSender, rate_limiter::RateLimiter, safe_vec::{SafeString, SafeVec}, traffic_direction::TrafficDirection, traffic_limiter::{TrafficLimiter, TrafficRate}}, types::{ client_addr::ClientAddr, endpoint::{self, Endpoint}}};
 use either::Either::{self, Left, Right};
 use futures::FutureExt;
 use replace_with::replace_with;
@@ -38,28 +38,30 @@ pub enum ConnectionClosedReason{
 }
 
 impl ConnectionClosedReason{
-	pub fn error(err: anyhow::Error) -> Self{
-		Self::ErrorHappened(format!("{err}"))
+	pub fn error(err: impl std::fmt::Debug) -> Self{
+		Self::ErrorHappened(format!("{err:?}"))
 	}
 }
 
-pub struct ConnectionTask{
-	event_sender	: ConnectionEventSender,
-	config   		: WatchReceiver<ConnectionConfig>,
+pub struct ConnectionTask {
+	event_sender		: ConnectionEventSender,
+	config   			: WatchReceiver<ConnectionConfig>,
 
-	client_stream	: ClientStream,
-	host_stream		: TorStream,
+	client_stream		: ClientStream,
+	host_stream			: TorStream,
 
-	host_addr_getter: HostAddrGetter,
+	host_addr_getter	: HostAddrGetter,
+	c2h_traffic_limiter	: TrafficLimiter,
+	h2c_traffic_limiter	: TrafficLimiter,
 }
 
 pub struct ConnectionEventSender{
 	client_addr			: ClientAddr,
-	inner_global_sender	: BroadcastSender<(ClientAddr, ConnectionEvent)>
+	inner_global_sender	: EventSender<(ClientAddr, ConnectionEvent)>
 }
 
 impl ConnectionEventSender{
-	pub fn new(client_addr: ClientAddr, inner_global_sender: BroadcastSender<(ClientAddr, ConnectionEvent)>) -> Self {
+	pub fn new(client_addr: ClientAddr, inner_global_sender: EventSender<(ClientAddr, ConnectionEvent)>) -> Self {
 			Self { client_addr, inner_global_sender }
 		}
 	
@@ -85,8 +87,17 @@ impl Future for ConnectionTaskHandle{
 
 impl ConnectionTask{
 	pub fn new(event_sender: ConnectionEventSender, config: WatchReceiver<ConnectionConfig>, client_stream: ClientStream, host_stream: TorStream, host_addr_getter: HostAddrGetter) -> Self {
-			Self { event_sender, config, client_stream, host_stream, host_addr_getter }
+		let traffic_rate = config.borrow().traffic_max_rate.clone();
+		Self { 
+			event_sender, 
+			config, 
+			client_stream, 
+			host_stream, 
+			host_addr_getter, 
+			c2h_traffic_limiter: TrafficLimiter::new(traffic_rate.clone()),
+			h2c_traffic_limiter: TrafficLimiter::new(traffic_rate.clone()),
 		}
+	}
 	
 	pub fn run(mut self) -> ConnectionTaskHandle{
 		let task = Box::pin(async move{
@@ -97,8 +108,6 @@ impl ConnectionTask{
 	}
 
 	async fn run_internal(&mut self) -> Result<(), anyhow::Error>{
-		#![allow(unreachable_code)]
-
 		let mut client_read_buf = SafeVec::new_from_vec(vec![0_u8;16*1024]);
 		let mut host_read_buf   = SafeVec::new_from_vec(vec![0_u8;64*1024]);
 
@@ -121,11 +130,15 @@ impl ConnectionTask{
 			async { 
 				'TASK_LOOP: loop {
 					let timeout =  tokio::time::sleep(self.config.borrow_and_update().timeout.clone());
-
 					select!{
 						() = timeout => {
 							break 'TASK_LOOP ConnectionClosedReason::TimedOut;
-						} ,
+						},
+
+						changed_res = self.config.changed() => {
+							err!(changed_res);
+							self.update_configs().await;
+						}
 
 						client_read_res = self.client_stream.read( client_read_buf.as_mut()) => {
 							let read_count = err!(client_read_res;ConnectionClosedReason::DisconnectedByClient);
@@ -163,12 +176,19 @@ impl ConnectionTask{
 		Ok(())
 	}
 
+	async fn update_configs(&mut self) {
+		let traffic_rate = self.config.borrow().traffic_max_rate.clone();
+		self.c2h_traffic_limiter.update_config(traffic_rate.clone());
+		self.h2c_traffic_limiter.update_config(traffic_rate.clone());
+	}
 
 	async fn send_from_client_to_host(
 		&mut self, 
 		buf			: &mut SafeVec<u8>, 
 		mut read_count	: usize
-	) -> Result<(), anyhow::Error>{
+	) -> Result<(), anyhow::Error> {
+
+		self.c2h_traffic_limiter.limit_rate().await;
 
 		let parsed_req = 'READ_LOOP: loop {
 			let mut req = webparse::Request::new();
@@ -184,11 +204,14 @@ impl ConnectionTask{
 					read_count += self.client_stream.read(&mut buf[read_count..]).await?;
 					continue 'READ_LOOP;
 				},
-				Err(e) => {
+				Err(_e) => {
 					break 'READ_LOOP Right(&buf.as_ref()[0..read_count]);
 				}
 			};
 		};
+
+		self.c2h_traffic_limiter.add_traffic(read_count);
+
 		match parsed_req {
 			Right(bytes) => {
 				// parsing failed. In this case, there is no need to do anything. We just forward the message as is
@@ -267,7 +290,11 @@ impl ConnectionTask{
 		buf				: &mut SafeVec<u8>,
 		read_count		: usize
 	) -> Result<(), anyhow::Error>{
+		self.h2c_traffic_limiter.limit_rate().await;
 		let read_bytes = &buf.as_ref()[0..read_count];
+
+		self.h2c_traffic_limiter.add_traffic(read_count);
+
 		self.client_stream.write_all(read_bytes).await?;
 		Ok(())
 	}

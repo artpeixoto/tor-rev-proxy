@@ -1,5 +1,6 @@
 use std::time::SystemTime;
 
+use chrono::{DateTime, Local, NaiveDateTime};
 use tokio::sync::broadcast::{self , *};
 
 pub use tokio::sync::broadcast::error::{RecvError, SendError, TryRecvError};
@@ -10,12 +11,12 @@ pub fn channel<T: Clone>(capacity: usize) -> (EventSender<T>, EventReceiver<T>){
 
 #[derive(Clone)]
 pub struct EventSender<T:Clone>{
-	inner_sender: Sender<(SystemTime, T)>
+	inner_sender: Sender<(DateTime<Local>, T)>
 }
 
 impl<T:Clone> EventSender<T>{
 	pub fn send(&mut self, value: T) -> Result<usize, SendError<T>>{
-		let now = SystemTime::now();
+		let now = SystemTime::now().into();
 		self.inner_sender.send((now, value)).map_err(|SendError((_now, val))| SendError(val))
 	}
 
@@ -25,14 +26,14 @@ impl<T:Clone> EventSender<T>{
 }
 
 pub struct EventReceiver<T: Clone>{
-	inner_receiver: Receiver<(SystemTime, T)>
+	inner_receiver: Receiver<(DateTime<Local>, T)>
 }
 
 impl<T:Clone> EventReceiver<T>{
-	pub fn try_recv(&mut self) -> Result<(SystemTime, T), TryRecvError>{
+	pub fn try_recv(&mut self) -> Result<(DateTime<Local>, T), TryRecvError>{
 		self.inner_receiver.try_recv()
 	}
-	pub async fn recv(&mut self) -> Result<(SystemTime, T), RecvError>{
+	pub async fn recv(&mut self) -> Result<(DateTime<Local>, T), RecvError>{
 		self.inner_receiver.recv().await
 	}
 	pub fn resubscribe(&self) -> Self{

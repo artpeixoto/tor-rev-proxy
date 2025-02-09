@@ -1,0 +1,18 @@
+{
+            "permission_list": {
+                "type": "blocklist",
+                "items": []
+            },
+            "client_sockets" :{ 
+                "tcp_socket": {
+                    "max_simultaneous_clients": 32000,
+                    "port": 80
+                },
+                "tls_socket": null
+            },
+            "connections": {
+                "poll_rate_hz": 10.0,
+                "timeout_ms": 5000.0,
+                "max_traffic_rate_kbps": 1024
+            }
+        }

@@ -36,7 +36,7 @@ pub struct TrafficRate{
 }
 
 impl TrafficRate{
-	pub fn new(kilobytes_per_second: u32) -> Self{
+	pub fn from_kbps(kilobytes_per_second: u32) -> Self{
 		Self{kilobytes_per_second}
 	}
 	pub fn get_duration_per_kilobyte(&self) -> Duration{

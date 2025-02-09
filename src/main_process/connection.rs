@@ -12,7 +12,7 @@ use super::sockets::{client_sockets::ClientStream, host_socket::{self, build_hos
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize , Debug)]
 pub struct ConnectionConfig{
-	pub traffic_max_rate   	: TrafficRate,
+	pub max_traffic_rate   	: TrafficRate,
     pub poll_rate_duration  : Duration,
     pub timeout             : Duration
 }
@@ -87,7 +87,7 @@ impl Future for ConnectionTaskHandle{
 
 impl ConnectionTask{
 	pub fn new(event_sender: ConnectionEventSender, config: WatchReceiver<ConnectionConfig>, client_stream: ClientStream, host_stream: TorStream, host_addr_getter: HostAddrGetter) -> Self {
-		let traffic_rate = config.borrow().traffic_max_rate.clone();
+		let traffic_rate = config.borrow().max_traffic_rate.clone();
 		Self { 
 			event_sender, 
 			config, 
@@ -177,7 +177,7 @@ impl ConnectionTask{
 	}
 
 	async fn update_configs(&mut self) {
-		let traffic_rate = self.config.borrow().traffic_max_rate.clone();
+		let traffic_rate = self.config.borrow().max_traffic_rate.clone();
 		self.c2h_traffic_limiter.update_config(traffic_rate.clone());
 		self.h2c_traffic_limiter.update_config(traffic_rate.clone());
 	}
@@ -223,9 +223,7 @@ impl ConnectionTask{
 
 				// write first line
 				self.host_stream.write_all(headers.method().as_str().as_bytes()).await.unwrap();
-
 				self.host_stream.write_all(b" ").await.unwrap();
-
 				self.host_stream.write_all(headers.path().as_bytes()).await.unwrap();
 				self.host_stream.write_all(b" ").await.unwrap();
 				self.host_stream.write_all(headers.version().as_str().as_bytes()).await.unwrap();
@@ -256,6 +254,7 @@ impl ConnectionTask{
 								)
 								.await?;
 						},
+
 						"Referer" => {
 							let mut url = Url::from_str(from_utf8(header_value.as_bytes())?)?;
 
@@ -264,7 +263,8 @@ impl ConnectionTask{
 							let safe_url_string =SafeString::from_string( url.into());
 
 							write_header(&mut self.host_stream, header_name.name(), safe_url_string.as_ref().as_bytes()).await?;
-						}
+						},
+
 						header_name => {
 							write_header(&mut self.host_stream, header_name, header_value.as_bytes())
 							.await?;

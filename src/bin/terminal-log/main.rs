@@ -148,7 +148,9 @@ impl<'a> Widget for &'a Connections {
             };
             let [curr_conn_area, remaining_area] =
                 Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(remaining);
+
             let curr_conn_area = curr_conn_area.inner(Margin::new(2, 0));
+
             Paragraph::new(format!("{}", current_conn.0))
                 .left_aligned()
                 .bold()

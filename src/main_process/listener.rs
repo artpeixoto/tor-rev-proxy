@@ -14,8 +14,8 @@ use tokio::select;
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq , Debug)]
 pub struct ClientSocketsConfig {
-    pub client_tcp_socket_config : Option<SocketConfig>,
-    pub client_tls_socket_config : Option<( SocketConfig, TlsAcceptorConfig)>,
+    pub tcp_socket_config : Option<SocketConfig>,
+    pub tls_socket_config : Option<( SocketConfig, TlsAcceptorConfig)>,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
@@ -55,8 +55,8 @@ impl Listener {
         let client_sockets = 
             ClientSockets
             ::build_client_sockets(
-                &configs.client_tcp_socket_config, 
-                &configs.client_tls_socket_config
+                &configs.tcp_socket_config, 
+                &configs.tls_socket_config
             )
             .unwrap();
         let _ = event_sender.send(ListenerEvent::SocketsBuilt);
@@ -95,7 +95,7 @@ impl Listener {
         let _ = event_sender.send(ListenerEvent::SocketsConfigIs(configs.clone()));
         let _ = event_sender.send(ListenerEvent::BuildingSockets);
 
-        let client_sockets = ClientSockets::build_client_sockets(&configs.client_tcp_socket_config, &configs.client_tls_socket_config).unwrap();
+        let client_sockets = ClientSockets::build_client_sockets(&configs.tcp_socket_config, &configs.tls_socket_config).unwrap();
 
         let _ = event_sender.send(ListenerEvent::SocketsBuilt);
 
